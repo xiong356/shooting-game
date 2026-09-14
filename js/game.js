@@ -122,6 +122,45 @@ function createLighting() {
 // ============================================
 // ENVIRONMENT: TRAINING RANGE
 // ============================================
+/**
+ * 场地实体障碍的碰撞体（XZ 平面上的 AABB）。
+ * 由 createDivider / createPillar 在**创建几何体的同时**登记，保证两者不会各改各的 ——
+ * 挪动柱子时碰撞盒自动跟随，不需要另外维护一张坐标表。
+ * 注意：外围边界墙**不在这里**，它们由 updateMovement 末尾的 clamp 兜底（见那里的注释）。
+ */
+const solidObstacles = [];   // { minX, maxX, minZ, maxZ, height }
+
+/**
+ * 登记一个以 (x,z) 为中心、底面贴地、高 height 的实体方块。
+ *
+ * 摆放约束：两个障碍的间距不能小于玩家直径（PLAYER_RADIUS * 2）。
+ * 若缝隙比玩家还窄，圆 vs AABB 的推出解在数学上不存在 —— 玩家挤不进去也推不出来，
+ * 两个盒子会互相把玩家推来推去导致抖动。这是关卡摆放的约束，解算器修不了，
+ * 所以在登记时就报警，而不是等玩到那里才发现。
+ */
+function registerSolid(x, z, width, depth, height) {
+  const box = {
+    minX: x - width / 2,
+    maxX: x + width / 2,
+    minZ: z - depth / 2,
+    maxZ: z + depth / 2,
+    height,
+  };
+
+  for (const o of solidObstacles) {
+    const gapX = Math.max(o.minX - box.maxX, box.minX - o.maxX);
+    const gapZ = Math.max(o.minZ - box.maxZ, box.minZ - o.maxZ);
+    if (gapX < 0 && gapZ < 0) continue;   // 两轴都重叠 = 障碍本身相交，不算间隙
+    const gap = Math.max(gapX, gapZ);     // 分离轴上的真实间距
+    if (gap < PLAYER_RADIUS * 2) {
+      console.warn('障碍间距 ' + gap.toFixed(2) + 'm 小于玩家直径 ' + (PLAYER_RADIUS * 2) +
+        'm，玩家会被卡在缝隙里 — 位置 (' + x + ', ' + z + ')');
+    }
+  }
+
+  solidObstacles.push(box);
+}
+
 function createEnvironment() {
   const env = new THREE.Group();
   scene.add(env);
@@ -247,6 +286,7 @@ function createEnvironment() {
   function createDivider(x, z, length = 12) {
     const group = new THREE.Group();
     const geo = new THREE.BoxGeometry(0.3, 1.8, length);
+    registerSolid(x, z, 0.3, length, 1.8);   // 碰撞体随几何体一起登记
     const mat = new THREE.MeshStandardMaterial({
       color: '#444455',
       roughness: 0.5,
@@ -308,6 +348,7 @@ function createEnvironment() {
   function createPillar(x, z) {
     const group = new THREE.Group();
     const geo = new THREE.BoxGeometry(1.2, 3, 1.2);
+    registerSolid(x, z, 1.2, 1.2, 3);   // 碰撞体随几何体一起登记
     const mat = new THREE.MeshStandardMaterial({
       color: '#4a4a58',
       roughness: 0.5,
@@ -815,6 +856,9 @@ function spawnMonsters(count) {
       originalRot: monster.rotation.y,
       health: monster.userData.maxHealth,
       dying: false,
+      // 正面被挡住时选定的绕行侧（-1 左 / +1 右 / 0 未选）。
+      // 必须保持到脱离障碍为止，否则每帧重新随机会让野怪左右抖动、原地打转。
+      avoidSide: 0,
     };
 
     // 血条画成满血
@@ -1151,6 +1195,28 @@ const SFX_FILES = {
 };
 
 /**
+ * 脚步采样（CC0 1.0，来源与许可见 assets/sfx/CREDITS.md）。
+ * 12 个硬地面单次脚步变体：01~06 石质/硬表面，07~12 地铁站硬地。
+ * 脚步是全局最高频音效（疾跑 4.16 声/秒），变体数量直接决定听感是否像复读机 —— 不要随意删减。
+ * 采样未加载完时 playFootstep 会自动回退到程序化合成（synthFootstep）。
+ */
+const FOOTSTEP_FILES = [
+  'assets/sfx/footsteps/footstep-01.wav',
+  'assets/sfx/footsteps/footstep-02.wav',
+  'assets/sfx/footsteps/footstep-03.wav',
+  'assets/sfx/footsteps/footstep-04.wav',
+  'assets/sfx/footsteps/footstep-05.wav',
+  'assets/sfx/footsteps/footstep-06.wav',
+  'assets/sfx/footsteps/footstep-07.wav',
+  'assets/sfx/footsteps/footstep-08.wav',
+  'assets/sfx/footsteps/footstep-09.wav',
+  'assets/sfx/footsteps/footstep-10.wav',
+  'assets/sfx/footsteps/footstep-11.wav',
+  'assets/sfx/footsteps/footstep-12.wav',
+];
+const FOOTSTEP_KEY_PREFIX = 'footstep/';   // sfxBuffers 里的 key 前缀
+
+/**
  * 每把武器的音效映射。
  * - 各字段值为 SFX_FILES 的 key；缺省该字段时自动回退到程序化合成音。
  * - pitchJitter：每发抖动的播放速率范围，避免连发时听感像复读机。
@@ -1176,7 +1242,11 @@ const sfxStatus = { requested: 0, loaded: 0, failed: [] };
 /** 预加载全部采样。失败不抛错——播放时会自动回退到合成音。 */
 async function preloadWeaponSfx() {
   if (!audioCtx) return;
-  const entries = Object.entries(SFX_FILES);
+  // 武器音效与脚步采样共用同一张 sfxBuffers 表、同一套「失败回退合成音」逻辑
+  const entries = [
+    ...Object.entries(SFX_FILES),
+    ...FOOTSTEP_FILES.map((url, i) => [FOOTSTEP_KEY_PREFIX + i, url]),
+  ];
   sfxStatus.requested = entries.length;
 
   await Promise.all(entries.map(async ([key, url]) => {
@@ -1429,6 +1499,136 @@ function synthBoltSound() {
   osc.stop(now + 0.1);
 }
 
+// ---- 脚步声（程序化合成，零素材）----
+// 变体表：lp = 鞋底低通 Hz，bp = 摩擦带通 Hz，q = 带通 Q，
+// decay = 噪声衰减系数（越大越干脆），thumpFrom/To = 体重共振扫频起止 Hz。
+// 三个维度一起变，4 个变体的辨识度才够。
+const FOOTSTEP_VARIANTS = [
+  { lp: 190, bp: 2800, q: 0.9, decay: 26, thumpFrom: 82, thumpTo: 52 },
+  { lp: 215, bp: 3300, q: 1.1, decay: 31, thumpFrom: 76, thumpTo: 48 },
+  { lp: 170, bp: 2450, q: 0.7, decay: 22, thumpFrom: 88, thumpTo: 55 },
+  { lp: 205, bp: 3050, q: 1.3, decay: 28, thumpFrom: 80, thumpTo: 50 },
+];
+const FOOTSTEP_VOLUME        = 0.18; // 合成音基础音量
+// 采样基础音量。采样经 ffmpeg loudnorm I=-20 归一，电平明显低于原来的合成音，
+// 故单独给一个增益，而不是和合成音共用 FOOTSTEP_VOLUME。
+const FOOTSTEP_SAMPLE_VOLUME = 0.50;
+const FOOTSTEP_VOL_JITTER   = 0.15; // 音量随机抖动 ±15%
+const FOOTSTEP_RATE_JITTER  = 0.08; // 播放速率随机抖动 ±8%
+const FOOTSTEP_SPRINT_BOOST = 0.06; // 疾跑音量增量（踩得更重）
+const FOOTSTEP_DURATION     = 0.18; // 噪声缓冲时长（秒）
+const FOOTSTEP_LOG_MAX      = 32;   // 落脚记录条数（供自动化验证回溯）
+const footstepLog = [];             // 最近若干次落脚 { phase, speed }（有上限，会被 shift 截断）
+let footstepCount = 0;              // 累计落脚次数（单调递增，不受上限影响，用于测步频）
+
+let lastFootstepIdx = -1;
+
+/** 随机挑一个已加载的脚步采样。刻意避开与上一步相同的变体——连续同音最容易被听出来。 */
+function pickFootstepBuffer() {
+  const n = FOOTSTEP_FILES.length;
+  if (n === 0) return null;
+  let idx = (Math.random() * n) | 0;
+  if (n > 1 && idx === lastFootstepIdx) idx = (idx + 1 + ((Math.random() * (n - 1)) | 0)) % n;
+  const buf = sfxBuffers.get(FOOTSTEP_KEY_PREFIX + idx);
+  if (!buf) return null;
+  lastFootstepIdx = idx;
+  return buf;
+}
+
+/**
+ * 脚步落地声入口：**采样优先，失败回退程序化合成**。
+ * 采样是 CC0 真实录音（12 个硬地面变体）；合成音作为加载失败/未就绪时的兜底，
+ * 保证即使音频文件全挂掉，脚步也不会静音。
+ */
+function playFootstep({ sprint = 0 } = {}) {
+  if (!audioCtx) return;
+
+  const buffer = pickFootstepBuffer();
+  if (!buffer) { synthFootstep({ sprint }); return; }
+
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  // 每步随机音高，在 12 个变体之外再加一层变化
+  src.playbackRate.value = 1 + (Math.random() * 2 - 1) * FOOTSTEP_RATE_JITTER;
+
+  const gain = audioCtx.createGain();
+  gain.gain.value = FOOTSTEP_SAMPLE_VOLUME * (1 + (Math.random() * 2 - 1) * FOOTSTEP_VOL_JITTER)
+                  + FOOTSTEP_SPRINT_BOOST * sprint;
+
+  src.connect(gain);
+  gain.connect(audioCtx.destination);
+  src.start();
+}
+
+function synthFootstep({ sprint = 0 } = {}) {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const v = FOOTSTEP_VARIANTS[(Math.random() * FOOTSTEP_VARIANTS.length) | 0];
+
+  // 每步随机：速率（同时改变音色与有效时长）+ 音量 + 变体 —— 避免脚步听起来像机关枪
+  const rate = 1 + (Math.random() * 2 - 1) * FOOTSTEP_RATE_JITTER;
+  const vol  = FOOTSTEP_VOLUME * (1 + (Math.random() * 2 - 1) * FOOTSTEP_VOL_JITTER)
+             + FOOTSTEP_SPRINT_BOOST * sprint;
+
+  // 本步总线：统一承载音量抖动
+  const out = audioCtx.createGain();
+  out.gain.value = vol;
+  out.connect(audioCtx.destination);
+
+  // 噪声源：指数衰减包络直接烘进采样（与 synthGunshot 同一手法）
+  const len = Math.floor(audioCtx.sampleRate * FOOTSTEP_DURATION);
+  const buffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-(i / len) * v.decay);
+  }
+
+  // ① 鞋底拍地：主体，最响
+  const slapSrc = audioCtx.createBufferSource();
+  slapSrc.buffer = buffer;
+  slapSrc.playbackRate.value = rate;
+  const slapFilter = audioCtx.createBiquadFilter();
+  slapFilter.type = 'lowpass';
+  slapFilter.frequency.setValueAtTime(v.lp + sprint * 40, now);
+  const slapGain = audioCtx.createGain();
+  slapGain.gain.setValueAtTime(1.0, now);
+  slapGain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+  slapSrc.connect(slapFilter);
+  slapFilter.connect(slapGain);
+  slapGain.connect(out);
+  slapSrc.start(now);
+
+  // ② 高频摩擦：鞋面擦地的「沙」，副层，短促。
+  //    playbackRate 取 rate*1.05 让两层不完全相关（同一个噪声波形）
+  const scuffSrc = audioCtx.createBufferSource();
+  scuffSrc.buffer = buffer;
+  scuffSrc.playbackRate.value = rate * 1.05;
+  const scuffFilter = audioCtx.createBiquadFilter();
+  scuffFilter.type = 'bandpass';
+  scuffFilter.frequency.setValueAtTime(v.bp + sprint * 350, now);
+  scuffFilter.Q.value = v.q;
+  const scuffGain = audioCtx.createGain();
+  scuffGain.gain.setValueAtTime(0.35, now);
+  scuffGain.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+  scuffSrc.connect(scuffFilter);
+  scuffFilter.connect(scuffGain);
+  scuffGain.connect(out);
+  scuffSrc.start(now);
+
+  // ③ 体重共振：低频「咚」，给脚步一点分量感
+  const thump = audioCtx.createOscillator();
+  thump.type = 'sine';
+  thump.frequency.setValueAtTime(v.thumpFrom * rate, now);
+  thump.frequency.exponentialRampToValueAtTime(v.thumpTo * rate, now + 0.09);
+  const thumpGain = audioCtx.createGain();
+  thumpGain.gain.setValueAtTime(0.5, now);
+  thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+  thump.connect(thumpGain);
+  thumpGain.connect(out);
+  thump.start(now);
+  thump.stop(now + 0.14);
+}
+
 function playGameEndSound() {
   if (!audioCtx) return;
   const now = audioCtx.currentTime;
@@ -1533,7 +1733,11 @@ canvas.addEventListener('mousedown', (e) => {
     input.shootPressed = true;
   }
 });
-canvas.addEventListener('mouseup', (e) => {
+// mouseup 必须挂 window 而不是 canvas：指针锁定中途丢失时（例如按 Esc），
+// 松开的鼠标事件会落到别的元素上，挂 canvas 就收不到 → shootPressed 永久为 true
+// → 持续自动开火，且在新速度模型下被永久压在开枪档（2.4）。
+// mousedown 仍留 canvas，避免点击 UI 按钮误触发开火。
+window.addEventListener('mouseup', (e) => {
   if (e.button === 0) input.shootPressed = false;
 });
 
@@ -1580,7 +1784,10 @@ function setupMobileControls() {
     }
   }, { passive: false });
 
-  joystickBase.addEventListener('touchend', (e) => {
+  // touchcancel 与 touchend 共用同一处理（changedTouches 语义相同）。
+  // 触摸被系统中断（来电 / 通知下拉 / 手势返回）时若不处理，joystickId 会永久占位，
+  // 表现为「玩家永久自动行走 + 脚步无限响」。
+  const endJoystick = (e) => {
     for (const touch of e.changedTouches) {
       if (touch.identifier === joystickId) {
         joystickId = null;
@@ -1589,7 +1796,9 @@ function setupMobileControls() {
         joystickThumb.style.transform = 'translate(0px, 0px)';
       }
     }
-  });
+  };
+  joystickBase.addEventListener('touchend', endJoystick);
+  joystickBase.addEventListener('touchcancel', endJoystick);
 
   // Look area (right side of screen for camera control)
   document.addEventListener('touchstart', (e) => {
@@ -1619,7 +1828,7 @@ function setupMobileControls() {
     }
   });
 
-  document.addEventListener('touchend', (e) => {
+  const endLook = (e) => {
     for (const touch of e.changedTouches) {
       if (touch.identifier === lookId) {
         lookId = null;
@@ -1627,17 +1836,23 @@ function setupMobileControls() {
         input.touchLookY = 0;
       }
     }
-  });
+  };
+  document.addEventListener('touchend', endLook);
+  document.addEventListener('touchcancel', endLook);
 
   // Shoot button
   shootBtn.addEventListener('touchstart', (e) => {
     e.preventDefault();
     input.shootPressed = true;
   });
-  shootBtn.addEventListener('touchend', (e) => {
+  // touchcancel 必须处理：触摸被系统中断时若不置回，shootPressed 会卡在 true，
+  // 表现为「持续自动开火」且在新速度模型下被永久压在开枪档（2.4）。
+  const endShoot = (e) => {
     e.preventDefault();
     input.shootPressed = false;
-  });
+  };
+  shootBtn.addEventListener('touchend', endShoot);
+  shootBtn.addEventListener('touchcancel', endShoot);
 
   // Reload button
   reloadBtn.addEventListener('touchstart', (e) => {
@@ -1681,10 +1896,271 @@ const lookSensitivityX = 0.002;
 const lookSensitivityY = 0.0004;
 const touchLookSensitivityX = 0.006;
 const touchLookSensitivityY = 0.006;
-const moveSpeed = 6;
+// ---- 移动速度档位（单位/秒）----
+// 优先级：开枪 > 换弹 > 疾跑 > 慢走（开枪要求非换弹中，故前两者互斥）
+const MOVE_SPEED_WALK   = 4.2;   // 慢走（默认，不按 Shift）
+const MOVE_SPEED_SPRINT = 7.2;   // 疾跑（按住 Shift）
+const MOVE_SPEED_RELOAD = 3.2;   // 换弹期间：比开枪略快，仍明显低于慢走
+const MOVE_SPEED_FIRING = 2.4;   // 开枪期间：最低档
+const MOVE_INPUT_DEADZONE = 0.1; // 移动输入死区（沿用原阈值）
+const SPRINT_MAG_MIN = 0.85;     // 移动端推杆超过此值后开始向疾跑渐变
+
+// 武器摆动速率基准：改动前 moveSpeed 恒为 6，慢走档乘该增益恰好回到原节奏，
+// 保证「默认档武器摆动观感」与改动前逐帧一致。
+const WEAPON_BOB_SPEED_GAIN = 6 / MOVE_SPEED_WALK;
+
+// ---- 相机呼吸 / 行走摆动 ----
+const BREATH_HZ  = 0.25;   // 待机呼吸频率（Hz）
+const BREATH_AMP = 0.008;  // 待机呼吸幅度（±，垂直）
+const SWAY_AMP_WALK    = 0.035;  // 行走摆动幅度（±，垂直）
+const SWAY_AMP_SPRINT  = 0.055;  // 疾跑摆动幅度（±，垂直）
+const SWAY_AMP_LATERAL = 0.018;  // 行走横向摆幅（±）
+
+// ---- 步频 ----
+// 步频由「等效步幅」导出，而不是按档位写死：摇杆推杆深度会缩放速度，
+// 若步频固定，半推杆（速度减半）时脚会打滑一倍。用步幅把这个关系编码进去后，
+// 慢走 4.2/1.615 = 2.6Hz，疾跑 7.2/1.731 = 4.16Hz，恰好是 2.6 × 1.6。
+//
+// ⚠️ 步频**不**按真实人类步速（约 1.9 步/秒）取。游戏移动速度是真实步速的约 3 倍，
+// 用真实步频会让每步跨度达到 2.2 米，看起来像在滑冰。步幅压到 1.6~1.7 米后
+// 脚步密度才与实际位移匹配 —— 这里要的是「看起来对」，不是「物理上对」。
+const STEP_RATE_WALK        = 2.6;   // 慢走步频（步/秒）
+const STEP_RATE_SPRINT_MULT = 1.6;   // 疾跑步频倍率 → 疾跑 4.16 步/秒
+const STRIDE_WALK   = MOVE_SPEED_WALK   / STEP_RATE_WALK;                             // ≈1.615 m
+const STRIDE_SPRINT = MOVE_SPEED_SPRINT / (STEP_RATE_WALK * STEP_RATE_SPRINT_MULT);   // ≈1.731 m
+
+// ---- 速度/摆动混合 ----
+const LOCO_BLEND_RATE = 8;             // 混合量指数趋近速率（时间常数 0.125s）
+const LOCO_BLEND_EPS  = 0.001;         // 残渣归零阈值（同 updateRecoil 的做法）
+const STEP_FOOTSTEP_MIN_BLEND = 0.35;  // 移动混合量超过此值才触发脚步
+
+/**
+ * 移动状态：本帧的档位 / 速度 / 动画混合量，供相机摆动、脚步触发、武器 bob 共用。
+ * 必须提到模块级 —— 原来的 isMoving 是 updateMovement 的局部变量，相机与音效取不到；
+ * 且武器 bob 相位推进速率原本与速度硬耦合，三方必须共享同一份数据。
+ */
+const locomotion = {
+  speed: 0,               // 本帧实际速度（已含摇杆模拟量）
+  isMoving: false,
+  firing: false,
+  reloading: false,
+  inputMagnitude: 0,      // 0..1 摇杆推杆深度；键盘恒为 0 或 1
+  moveBlend: 0,           // 0..1 平滑后的「正在移动」程度
+  sprintBlend: 0,         // 0..1 平滑后的「疾跑」程度
+  swayAmp: SWAY_AMP_WALK, // 当前垂直摆幅（随 sprintBlend 插值）
+  stepRate: 0,            // 当前步频（步/秒）
+};
+
+// 摆动相位累加器。只在 updateLocomotion 内推进，而它只被 updateMovement 调用
+// （updateMovement 只在 status === 'playing' 时执行）→ 暂停时自动冻结。
+// ⚠️ 不要把相位推进挪进 updateCamera()：它在 paused 下也会执行。
+let breathPhase = 0;   // 呼吸相位（rad）
+let swayPhase   = 0;   // 摆动相位（rad）：每 +π = 一次落脚
+
 const jumpForce = 6;
 let isGrounded = true;
 let verticalVelocity = 0;
+
+/** 玩家碰撞半径。第一人称看不到自己的身体，取值以「贴墙走过时不穿模」为准 */
+const PLAYER_RADIUS = 0.4;
+const COLLISION_ITERATIONS = 2;   // 多跑一遍，处理夹在两个障碍物夹角里的情况
+
+/**
+ * 野怪碰撞半径。躯干宽 1.2、含肩甲最宽约 1.9，取 0.65 让身体边缘轻微陷入柱子 ——
+ * 视觉上是「贴着柱子」，而不是「离柱子还有一段距离就停住」。
+ */
+const MONSTER_RADIUS = 0.65;
+/** 正面顶住的判定：朝玩家的有效推进量低于 期望步长 × 该值 时，认定不是滑行而是顶住 */
+const MONSTER_BLOCKED_ADVANCE_MIN = 0.3;
+/** 绕行时每帧的侧向位移，以步长为单位（仅在找不到绕行拐角时的兜底路径上用） */
+const MONSTER_AVOID_STRENGTH = 1.0;
+/**
+ * 路径通畅性的探测半径，刻意小于碰撞半径。
+ * 玩家常常紧贴障碍站立，若用完整半径，玩家本身就会落在障碍的「外扩区」内，
+ * 导致任何拐角的路径判定都不通畅、绕行直接失效。
+ */
+const MONSTER_PROBE_RADIUS = MONSTER_RADIUS * 0.6;
+
+/**
+ * 本帧朝玩家方向的「有效推进量」——即实际位移在期望方向上的投影。
+ * 斜向撞墙时切向分量保留，该值接近满步长；正面顶住时接近 0。
+ */
+function getAdvance(fromX, fromZ, toX, toZ, dirX, dirZ) {
+  return (toX - fromX) * dirX + (toZ - fromZ) * dirZ;
+}
+
+/** 是否属于「正面顶住」（而非沿墙滑行）。抽成纯函数便于数值验证。 */
+function isMonsterHeadOnBlocked(advance, step) {
+  return advance < step * MONSTER_BLOCKED_ADVANCE_MIN;
+}
+
+/**
+ * 绕行方向：垂直于「朝玩家方向」的单位向量，符号由 avoidSide 决定。
+ * avoidSide 必须保持到脱离障碍为止，否则每帧重新随机会让野怪左右抖动、原地打转。
+ */
+function getAvoidDir(dirX, dirZ, avoidSide) {
+  return { x: -dirZ * avoidSide, z: dirX * avoidSide };
+}
+
+/**
+ * 野怪单帧的追逐位移：朝玩家走一步 -> 碰撞解算 -> 若正面顶住则绕行。
+ * 抽成纯函数（只依赖 pos 的 x/z 与 ud.avoidSide）是为了能离线仿真验证 ——
+ * 碰撞与绕行是这块最容易出错的地方，而实机里「正面顶住」的场景很难自然出现。
+ * @param {{x:number,z:number}} pos        野怪位置，原地修改
+ * @param {{avoidSide:number}} ud          野怪状态，会读写 avoidSide
+ * @returns {number} 本帧朝玩家的有效推进量（正面顶住时接近 0）
+ */
+/**
+ * 两点之间的直线路径是否通畅（沿线段采样，检查是否穿过任何障碍的外扩区）。
+ * 用 MONSTER_PROBE_RADIUS 而非碰撞半径 —— 理由见该常量的注释。
+ */
+function isPathClear(x0, z0, x1, z1) {
+  const dx = x1 - x0;
+  const dz = z1 - z0;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 1e-6) return true;
+  // 探测半径取保护值 + 步数硬上限：任何一个常量为 0 或 undefined 时，
+  // dist / 0 会得到 Infinity，没有上限的 for 循环会直接挂死。
+  const probe = MONSTER_PROBE_RADIUS > 0 ? MONSTER_PROBE_RADIUS : MONSTER_RADIUS;
+  const steps = Math.max(2, Math.min(256, Math.ceil(dist / (probe * 0.5))));
+  const r2 = MONSTER_PROBE_RADIUS * MONSTER_PROBE_RADIUS;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const px = x0 + dx * t;
+    const pz = z0 + dz * t;
+    for (const o of solidObstacles) {
+      const cx = Math.max(o.minX, Math.min(px, o.maxX));
+      const cz = Math.max(o.minZ, Math.min(pz, o.maxZ));
+      const ex = px - cx;
+      const ez = pz - cz;
+      if (ex * ex + ez * ez < r2) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 找绕行目标点：所有障碍的「外扩角」里，到玩家路径通畅、且离野怪最近的那一个。
+ * 朝拐角走 -> 绕过障碍 -> isPathClear 变真 -> 退出绕行恢复正常追逐。
+ * 只靠「垂直于朝向平移」是不够的：长墙会让人沿着墙来回蹭，
+ * 蹭到墙尽头后又被朝玩家的方向拉回墙的阴影里，永远绕不过去。
+ */
+function findDetourCorner(fromX, fromZ, playerX, playerZ) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const o of solidObstacles) {
+    const xs = [o.minX - MONSTER_PROBE_RADIUS, o.maxX + MONSTER_PROBE_RADIUS];
+    const zs = [o.minZ - MONSTER_PROBE_RADIUS, o.maxZ + MONSTER_PROBE_RADIUS];
+    for (const cx of xs) {
+      for (const cz of zs) {
+        if (!isPathClear(cx, cz, playerX, playerZ)) continue;
+        const d = Math.hypot(cx - fromX, cz - fromZ);
+        if (d < bestDist) { bestDist = d; best = { x: cx, z: cz }; }
+      }
+    }
+  }
+  return best;
+}
+
+function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
+  let dx = playerX - pos.x;
+  let dz = playerZ - pos.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-9) return 0;
+  dx /= len;
+  dz /= len;
+
+  const step = speed * dt;
+
+  // 绕行模式：朝外扩拐角走，直到到玩家的路径通畅为止
+  if (ud.avoidSide) {
+    if (isPathClear(pos.x, pos.z, playerX, playerZ)) {
+      ud.avoidSide = 0;   // 路径已通，恢复正常追逐
+    } else {
+      const corner = findDetourCorner(pos.x, pos.z, playerX, playerZ);
+      if (corner) {
+        const cx = corner.x - pos.x;
+        const cz = corner.z - pos.z;
+        const cl = Math.hypot(cx, cz) || 1;
+        pos.x += (cx / cl) * step;
+        pos.z += (cz / cl) * step;
+      } else {
+        // 兜底：所有拐角都不通畅时，沿垂直于朝向的一侧平移
+        const av = getAvoidDir(dx, dz, ud.avoidSide);
+        pos.x += av.x * step * MONSTER_AVOID_STRENGTH;
+        pos.z += av.z * step * MONSTER_AVOID_STRENGTH;
+      }
+      resolveObstacleCollisions(pos, MONSTER_RADIUS);
+      return 0;
+    }
+  }
+
+  const fromX = pos.x;
+  const fromZ = pos.z;
+  pos.x += dx * step;
+  pos.z += dz * step;
+
+  if (!resolveObstacleCollisions(pos, MONSTER_RADIUS)) return step;
+
+  // 被障碍挡住。斜向撞上时切向分量会自然保留（沿墙滑行），
+  // 只有「正面顶住」才需要进入绕行模式 —— 用朝玩家的有效推进量区分这两种情况。
+  const advance = getAdvance(fromX, fromZ, pos.x, pos.z, dx, dz);
+  if (isMonsterHeadOnBlocked(advance, step)) {
+    if (!ud.avoidSide) ud.avoidSide = Math.random() < 0.5 ? -1 : 1;
+  }
+  return advance;
+}
+
+/**
+ * 把一个圆形碰撞体推出所有相交的实体障碍（圆 vs AABB）。玩家与野怪共用这一套。
+ * 推出方向沿「AABB 上离圆心最近的点 → 圆心」的法线，因此天然支持**贴墙滑行** ——
+ * 只有垂直于墙面的分量被抵消，切向分量保留，不会撞上就被卡死。
+ * @param {THREE.Vector3} pos    位置，原地修改（只动 x/z，不动 y）
+ * @param {number} radius        碰撞半径，默认玩家半径
+ * @returns {boolean}            本次是否发生过推出（野怪靠它判断「被挡住了」）
+ */
+function resolveObstacleCollisions(pos, radius = PLAYER_RADIUS) {
+  let pushedAny = false;
+  for (let iter = 0; iter < COLLISION_ITERATIONS; iter++) {
+    let hit = false;
+    for (const o of solidObstacles) {
+      // 已跳到障碍物顶面之上则不碰撞。当前跳跃高度 1.2m < 最矮障碍 1.8m，实际不会触发；
+      // 留着是为了以后加平台/矮掩体时不用回头改这里。
+      if (pos.y >= o.height) continue;
+
+      // AABB 上离玩家最近的点
+      const cx = Math.max(o.minX, Math.min(pos.x, o.maxX));
+      const cz = Math.max(o.minZ, Math.min(pos.z, o.maxZ));
+      const dx = pos.x - cx;
+      const dz = pos.z - cz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= radius * radius) continue;
+
+      hit = true;
+      if (d2 > 1e-8) {
+        // 圆心在盒外：沿最近点法线推出
+        const d = Math.sqrt(d2);
+        const push = (radius - d) / d;
+        pos.x += dx * push;
+        pos.z += dz * push;
+      } else {
+        // 圆心已在盒内（高速穿入或与障碍重叠）：沿最浅的那个面推出
+        const toMinX = pos.x - o.minX;
+        const toMaxX = o.maxX - pos.x;
+        const toMinZ = pos.z - o.minZ;
+        const toMaxZ = o.maxZ - pos.z;
+        const m = Math.min(toMinX, toMaxX, toMinZ, toMaxZ);
+        if (m === toMinX)      pos.x = o.minX - radius;
+        else if (m === toMaxX) pos.x = o.maxX + radius;
+        else if (m === toMinZ) pos.z = o.minZ - radius;
+        else                   pos.z = o.maxZ + radius;
+      }
+    }
+    if (!hit) break;   // 没有相交就提前结束，正常情况下只跑一遍
+    pushedAny = true;
+  }
+  return pushedAny;
+}
 
 function updateMovement(dt) {
   // Update rotation from input
@@ -1706,17 +2182,15 @@ function updateMovement(dt) {
   // Get movement input
   let forward = 0;
   let right = 0;
-  let isMoving = false;
   if (state.isPointerLocked || state.isMobile) {
+    // 两分支互斥（isMobile 时不会建立指针锁定），用 else if 防止将来新增平台时静默取错值
     if (state.isPointerLocked) {
       forward = (keys['w'] ? 1 : 0) - (keys['s'] ? 1 : 0);
       right   = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
-    }
-    if (state.isMobile) {
+    } else if (state.isMobile) {
       forward = -input.joystickY;
       right   = input.joystickX;
     }
-    isMoving = Math.abs(forward) > 0.1 || Math.abs(right) > 0.1;
   }
 
   // Forward/right relative to camera horizontal angle
@@ -1727,13 +2201,27 @@ function updateMovement(dt) {
     .addScaledVector(forwardDir, forward)
     .addScaledVector(rightDir, right);
 
-  if (moveDir.length() > 1) moveDir.normalize();
+  // 摇杆模拟量必须在归一化之前取：forwardDir/rightDir 正交且模为 1，故
+  // moveDir.length() === hypot(forward, right)。键盘值 ∈ {0,±1} → 取 min 后恒为 0/1。
+  const inputMagnitude = Math.min(moveDir.length(), 1);
+  // ⚠️ 必须无条件归一化（只要长度非零）。旧代码的条件是 length() > 1，
+  // 半推杆时长度 0.5 不会被归一化，幅度就同时留在 moveDir 里、又乘进了 speed —— 缩放两次，
+  // 实测位移速度只有报告值的一半（2.1 报成 1.051）。幅度统一交给 locomotion.speed 承载。
+  if (moveDir.length() > 0) moveDir.normalize();
+
+  updateLocomotion(dt, inputMagnitude);
 
   // Apply movement
-  playerPosition.x += moveDir.x * moveSpeed * dt;
-  playerPosition.z += moveDir.z * moveSpeed * dt;
+  playerPosition.x += moveDir.x * locomotion.speed * dt;
+  playerPosition.z += moveDir.z * locomotion.speed * dt;
+
+  // 内部障碍（隔断 / 掩体柱）碰撞。必须放在边界 clamp **之前**：
+  // 否则贴着边界的柱子会把玩家推出去、再被 clamp 推回来，产生抖动。
+  resolveObstacleCollisions(playerPosition);
 
   // Clamp player to arena bounds (walls at X=±27, Z=-47, Z=13)
+  // 外围墙由这条 clamp 兜底（内侧面在 ±26.6 / -46.6 / 12.6，留出了玩家半径），
+  // 所以没有单独登记碰撞体；它同时也是「任何情况下都跑不出场地」的最终保险。
   playerPosition.x = Math.max(-26, Math.min(26, playerPosition.x));
   playerPosition.z = Math.max(-46, Math.min(12, playerPosition.z));
 
@@ -1765,16 +2253,148 @@ function updateMovement(dt) {
     playerGroup.visible = false;
   }
 
-  // Weapon bob
-  weaponBobPhase += (isMoving ? moveSpeed * dt : 0);
+  // Weapon bob：速率乘 WEAPON_BOB_SPEED_GAIN，使慢走档的摆动节奏与改动前（moveSpeed 恒为 6）一致
+  weaponBobPhase += locomotion.isMoving
+    ? locomotion.speed * WEAPON_BOB_SPEED_GAIN * dt
+    : 0;
+}
+
+// ---- 移动档位 / 速度 / 步频（纯函数，便于源码抽取后求值做数值验证）----
+
+/**
+ * 档位 + 输入模拟量 → 本帧目标速度。
+ * 优先级：开枪 > 换弹 > 疾跑 > 慢走。
+ */
+function getTargetMoveSpeed({ firing, reloading, sprintInput, inputMagnitude }) {
+  let base;
+  if (firing)         base = MOVE_SPEED_FIRING;
+  else if (reloading) base = MOVE_SPEED_RELOAD;
+  else                base = MOVE_SPEED_WALK + (MOVE_SPEED_SPRINT - MOVE_SPEED_WALK) * sprintInput;
+  return base * inputMagnitude;   // 摇杆模拟量只在这里乘一次
+}
+
+/**
+ * 读疾跑力度。
+ * 桌面：Shift 开关量（keydown 里做了 e.key.toLowerCase()，左右 Shift 统一为 'shift'）。
+ * 移动端：推杆超过 SPRINT_MAG_MIN 后线性渐变到满疾跑 —— 用渐变而非硬阈值，
+ * 否则推杆从 0.849 到 0.85 时速度会瞬跳 +71%，手感像被弹了一下。
+ */
+function readSprintInput(inputMagnitude) {
+  if (state.isMobile) {
+    if (inputMagnitude <= SPRINT_MAG_MIN) return 0;
+    return (inputMagnitude - SPRINT_MAG_MIN) / (1 - SPRINT_MAG_MIN);
+  }
+  return keys['shift'] ? 1 : 0;
+}
+
+/** 步频（步/秒）：由速度与等效步幅导出，保证任何档位/推杆深度下脚都不打滑 */
+function getStepRate(sprintBlend, speed, moveBlend) {
+  const stride = STRIDE_WALK + (STRIDE_SPRINT - STRIDE_WALK) * sprintBlend;
+  return (speed / stride) * moveBlend;
+}
+
+/** 本帧是否跨过落脚点（返回 0/1）。掉帧时单帧跨多个 π 也只算一次，避免同帧叠出连击音 */
+function stepsTriggered(prevPhase, currPhase) {
+  if (currPhase <= prevPhase) return 0;
+  return Math.floor(currPhase / Math.PI) > Math.floor(prevPhase / Math.PI) ? 1 : 0;
+}
+
+/**
+ * 推进移动状态：档位速度、混合量、摆动相位、脚步触发。
+ * ⚠️ 只允许被 updateMovement 调用 —— updateMovement 只在 status === 'playing' 时执行，
+ * 这条调用链是「暂停时相位不推进」的结构性保证。挪到 updateCamera 旁边会导致暂停了还在走。
+ */
+function updateLocomotion(dt, inputMagnitude) {
+  locomotion.inputMagnitude = inputMagnitude;
+  locomotion.reloading = state.reloading;
+  // 用「按住扳机」而非 canShoot 判定：否则全自动射击时速度会以 8.3Hz 的冷却频率抖动
+  locomotion.firing = input.shootPressed && !state.reloading && state.currentAmmo > 0;
+  locomotion.isMoving = inputMagnitude > MOVE_INPUT_DEADZONE;
+
+  const sprintInput = readSprintInput(inputMagnitude);
+  locomotion.speed = getTargetMoveSpeed({
+    firing: locomotion.firing,
+    reloading: locomotion.reloading,
+    sprintInput,
+    inputMagnitude,
+  });
+
+  // 混合量指数趋近（与 updateRecoil 的 Math.exp(-k*dt) 同一手法，帧率无关）+ 残渣归零
+  const k = 1 - Math.exp(-LOCO_BLEND_RATE * dt);
+  locomotion.moveBlend   += ((locomotion.isMoving ? 1 : 0) - locomotion.moveBlend) * k;
+  locomotion.sprintBlend += (sprintInput - locomotion.sprintBlend) * k;
+  if (locomotion.moveBlend   < LOCO_BLEND_EPS) locomotion.moveBlend = 0;
+  if (locomotion.sprintBlend < LOCO_BLEND_EPS) locomotion.sprintBlend = 0;
+
+  locomotion.swayAmp  = SWAY_AMP_WALK + (SWAY_AMP_SPRINT - SWAY_AMP_WALK) * locomotion.sprintBlend;
+  locomotion.stepRate = getStepRate(locomotion.sprintBlend, locomotion.speed, locomotion.moveBlend);
+
+  breathPhase += Math.PI * 2 * BREATH_HZ * dt;      // 呼吸相位恒推进
+  const prevSwayPhase = swayPhase;
+  swayPhase += Math.PI * locomotion.stepRate * dt;  // 每 π = 一次落脚
+
+  // 脚步：踩在摆动周期最低点（swayPhase 跨过 π 的整数倍）。
+  // 触发点与 getSwayOffset 的垂直最低点共用同一个 π 定义，结构上不可能各走各的。
+  // isGrounded 门控：跳跃过程中不踩空。
+  if (isGrounded && locomotion.moveBlend >= STEP_FOOTSTEP_MIN_BLEND
+      && stepsTriggered(prevSwayPhase, swayPhase)) {
+    playFootstep({ sprint: locomotion.sprintBlend });
+    footstepCount++;
+    footstepLog.push({ phase: Math.ceil(prevSwayPhase / Math.PI) * Math.PI, speed: locomotion.speed });
+    if (footstepLog.length > FOOTSTEP_LOG_MAX) footstepLog.shift();
+  }
+}
+
+/**
+ * 复位移动 / 摆动状态。startGame 必须调用，否则重开局会带着上一局的相位与混合量，
+ * 表现为「开局第一帧相机就偏在某个摆幅上」以及「开局立刻响一声脚步」。
+ */
+function resetLocomotionState() {
+  breathPhase = 0;
+  swayPhase = 0;
+  footstepLog.length = 0;
+  footstepCount = 0;
+  locomotion.speed = 0;
+  locomotion.isMoving = false;
+  locomotion.firing = false;
+  locomotion.reloading = false;
+  locomotion.inputMagnitude = 0;
+  locomotion.moveBlend = 0;
+  locomotion.sprintBlend = 0;
+  locomotion.swayAmp = SWAY_AMP_WALK;
+  locomotion.stepRate = 0;
+}
+
+/**
+ * 相机摆动偏移（纯函数）。
+ * 约定：swayPhase 每 +π = 一次落脚，且 π 的整数倍正好是落脚瞬间 —— 此处垂直取最低点、
+ * 横向取最外侧，两个分量的速度都为 0（脚刚踩实），故边界处天然 C¹ 连续，不会抽动。
+ * 物理对应：y 的周期 = π = 一步（落脚最低、摆动腿过身体时最高）；
+ *           x 的周期 = 2π = 一个完整步态（落脚时横向位移最大且左右交替）。
+ */
+function getSwayOffset(phase, amp, lateralAmp, moveBlend) {
+  return {
+    x: -lateralAmp * Math.cos(phase)     * moveBlend,
+    y: -amp        * Math.cos(2 * phase) * moveBlend,
+  };
 }
 
 function updateCamera() {
-  // First-person camera at eye level
-  const eyeY = playerPosition.y + eyeHeight;
-  camera.position.set(playerPosition.x, eyeY, playerPosition.z);
+  // 视觉摆动只叠加在 camera.position 上，绝不污染 playerPosition
+  // （与后坐力「独立偏移量、只在消费点叠加」的约定一致）。
+  // 呼吸与行走互为补集（1-moveBlend / moveBlend），和恒为 1，起步/停止时不会两个摆动叠加；
+  // 所有项都乘 moveBlend → 停止时相机精确回到中性位，不会停在半个摆幅上。
+  const sway = getSwayOffset(swayPhase, locomotion.swayAmp, SWAY_AMP_LATERAL, locomotion.moveBlend);
+  const breatheY = BREATH_AMP * (1 - locomotion.moveBlend) * Math.sin(breathPhase);
+
+  camera.position.set(
+    playerPosition.x + sway.x,
+    playerPosition.y + eyeHeight + breatheY + sway.y,
+    playerPosition.z
+  );
 
   // Set camera rotation from look angles + recoil offset (recoil decays back to 0)
+  // 摆动只改 position 不改 rotation → 准星与弹道仍然一致
   camera.rotation.order = 'YXZ';
   camera.rotation.set(cameraAngleV + recoilPitch, cameraAngleH + recoilYaw, 0);
 }
@@ -2240,12 +2860,9 @@ function updateMonsters(dt) {
       // 面朝玩家
       monster.lookAt(playerPosition.x, monster.position.y, playerPosition.z);
 
-      // 追逐（匀速，保持距离）
+      // 追逐（匀速，保持距离）。碰撞与正面绕行都在 stepMonsterChase 内部
       if (dist > ud.stopDist) {
-        const dir = new THREE.Vector3().subVectors(playerPosition, monster.position);
-        dir.y = 0;
-        dir.normalize();
-        monster.position.add(dir.multiplyScalar(ud.chaseSpeed * dt));
+        stepMonsterChase(monster.position, ud, playerPosition.x, playerPosition.z, ud.chaseSpeed, dt);
       }
     } else if (wasAlert) {
       // 刚刚脱离警惕——停在当前位置
@@ -2327,6 +2944,13 @@ function startGame() {
   cameraAngleH = 0;
   cameraAngleV = 0;
   weaponBobPhase = 0;
+  // 移动/摆动状态必须复位，否则重开局会带着上一局的相位与混合量：
+  // 表现为「开局第一帧相机偏在某个摆幅上」+「开局立刻响一声脚步」
+  resetLocomotionState();
+  // 输入瞬态也要复位：否则「按住扳机时结束对局」再重开，会开局即自动开火，
+  // 并在新的速度模型下被永久压在开枪档（2.4）
+  input.shootPressed = false;
+  input.reloadPressed = false;
   // Reset weapon to base position
   if (fpsWeapon && fpsWeapon.userData.basePosition) {
     fpsWeapon.position.copy(fpsWeapon.userData.basePosition);
@@ -2365,6 +2989,18 @@ function pauseGame() {
   state.status = 'paused';
   pausedInd.classList.remove('hidden');
   document.exitPointerLock();
+
+  // 清掉按键与输入瞬态。暂停必然伴随指针锁定丢失（Esc / 切标签页），
+  // 此时 keyup / mouseup 可能收不到 —— 不清的话恢复后会带着卡住的 Shift 持续疾跑、
+  // 或者带着卡住的 W 持续行走。locomotion 的混合量会自行衰减回中性位。
+  for (const k of Object.keys(keys)) keys[k] = false;
+  input.shootPressed = false;
+  input.reloadPressed = false;
+  input.jumpPressed = false;
+  input.mouseX = 0;
+  input.mouseY = 0;
+  input.touchLookX = 0;
+  input.touchLookY = 0;
 }
 
 function resumeGame() {
@@ -2659,6 +3295,54 @@ function init() {
   console.log('%c Click "进入训练" or press Enter to start',
     'color: #ece8e1;');
 }
+
+// ============================================
+// 调试快照（仅供自动化验证读取）
+// ============================================
+/**
+ * game.js 是 ES Module，内部变量在 CDP 的 Runtime.evaluate 里取不到。
+ * 这里暴露一个只读快照，仿 index.html 启动守卫用 window.__GAME_BOOTED__ 的先例。
+ * 不参与任何游戏逻辑，纯读取，无副作用。
+ */
+window.__SNAPSHOT__ = () => ({
+  speed: locomotion.speed,
+  firing: locomotion.firing,
+  reloading: locomotion.reloading,
+  moveBlend: locomotion.moveBlend,
+  sprintBlend: locomotion.sprintBlend,
+  stepRate: locomotion.stepRate,
+  swayAmp: locomotion.swayAmp,
+  swayPhase, breathPhase,
+  camX: camera.position.x,
+  camY: camera.position.y,
+  playerX: playerPosition.x,
+  playerY: playerPosition.y,
+  playerZ: playerPosition.z,
+  shootPressed: input.shootPressed,
+  isGrounded,
+  status: state.status,
+  currentAmmo: state.currentAmmo,
+  footstepLog: footstepLog.slice(),
+  footstepCount,   // 单调递增，不受 FOOTSTEP_LOG_MAX 截断影响
+  obstacleCount: solidObstacles.length,   // 已登记的实体障碍数（碰撞体与几何体同步）
+  // 野怪位置与绕行状态，供自动化验证「不穿墙 / 不卡死」
+  monsters: monsters.filter(m => !m.userData.dying).map(m => ({
+    id: m.userData.id,
+    x: m.position.x,
+    z: m.position.z,
+    alert: !!m.userData.alert,
+    avoidSide: m.userData.avoidSide || 0,
+  })),
+});
+// 让探针直接调真实实现，而不是复制一份到测试脚本里（避免测试与实现漂移）
+window.__SNAPSHOT__.speedFor      = getTargetMoveSpeed;
+window.__SNAPSHOT__.swayOffsetFor = getSwayOffset;
+window.__SNAPSHOT__.stepsTriggered = stepsTriggered;
+window.__SNAPSHOT__.stepRateFor   = getStepRate;
+window.__SNAPSHOT__.pause         = pauseGame;
+window.__SNAPSHOT__.resume        = resumeGame;
+window.__SNAPSHOT__.restart       = restartGame;
+window.__SNAPSHOT__.obstacles     = () => solidObstacles.map(o => ({...o}));
 
 // Boot
 init();

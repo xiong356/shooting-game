@@ -21,3 +21,6 @@ Desktop.ini
 # --- 日志 ---
 *.log
 npm-debug.log*
+
+# esm-lint 的 .mjs 临时副本
+.workbuddy/tests/.tmp/
