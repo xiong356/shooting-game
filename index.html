@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>王者峡谷 PvE — 野怪追逐</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- 非阻塞加载：Google Fonts 在国内网络常常不可达，用 media=print 技巧避免阻塞首屏渲染 -->
+  <link rel="stylesheet" media="print" onload="this.media='all'"
+        href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+  <noscript>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+  </noscript>
+</head>
+<body>
+  <div id="game-container">
+    <!-- Three.js Canvas -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- HUD Overlay -->
+    <div id="hud" class="hidden">
+      <!-- Top Bar -->
+      <div id="top-bar">
+        <div id="score-display">
+          <span class="score-label">得分</span>
+          <span id="score-value">PvE</span>
+        </div>
+        <div id="monster-display">
+          <span class="monster-label red">猩红</span>
+          <span id="monster-count-red" class="monster-count">0</span>
+          <span class="monster-label blue">蔚蓝</span>
+          <span id="monster-count-blue" class="monster-count">0</span>
+        </div>
+        </div>
+
+      <!-- Crosshair -->
+      <div id="crosshair">
+        <div class="crosshair-line top"></div>
+        <div class="crosshair-line right"></div>
+        <div class="crosshair-line bottom"></div>
+        <div class="crosshair-line left"></div>
+        <div class="crosshair-dot"></div>
+      </div>
+
+      <!-- Bottom Bar -->
+      <div id="bottom-bar">
+        <div id="ammo-display">
+          <span id="ammo-current">30</span>
+          <span class="ammo-divider">/</span>
+          <span id="ammo-max">30</span>
+        </div>
+        <div id="reload-bar">
+          <div id="reload-progress"></div>
+        </div>
+        <div id="reload-hint" class="hidden">
+          <span>换弹中</span>
+        </div>
+        <div id="alert-indicator" class="hidden">
+          <span>!</span>
+        </div>
+      </div>
+
+      <!-- Hit Marker (absolute center) -->
+      <div id="hit-marker" class="hidden"></div>
+
+      <!-- Kill Feed -->
+      <div id="kill-feed"></div>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="start-screen">
+      <div class="start-bg"></div>
+      <div class="start-content">
+        <div class="start-logo">
+          <span class="logo-v">V</span>
+          <span class="logo-sep"></span>
+          <span class="logo-text">野怪追逐</span>
+        </div>
+        <div class="start-subtitle">TRAINING RANGE</div>
+        <div class="start-divider"></div>
+        <div class="start-instructions">
+          <div class="instruction-row">
+            <span class="key-icon">W A S D</span>
+            <span>移动角色</span>
+          </div>
+          <div class="instruction-row">
+            <span class="key-icon">鼠标</span>
+            <span>瞄准视角</span>
+          </div>
+          <div class="instruction-row">
+            <span class="key-icon">左键</span>
+            <span>射击</span>
+          </div>
+          <div class="instruction-row">
+            <span class="key-icon">R</span>
+            <span>换弹</span>
+          </div>
+        </div>
+        <button id="start-btn" class="valorant-btn">
+          <span class="btn-text">进入训练</span>
+          <span class="btn-slash"></span>
+        </button>
+        <p class="start-hint">点击按钮进入训练靶场</p>
+      </div>
+    </div>
+
+    <!-- End Screen -->
+    <div id="end-screen" class="hidden">
+      <div class="end-content">
+        <div class="end-title">训练结束</div>
+        <div class="end-divider"></div>
+        <div class="end-stats">
+          <div class="stat-row">
+            <span class="stat-label">总得分</span>
+            <span id="end-score" class="stat-value">0</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">击杀数</span>
+            <span id="end-kills" class="stat-value">0</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">爆头数</span>
+            <span id="end-headshots" class="stat-value">0</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">命中率</span>
+            <span id="end-accuracy" class="stat-value">0%</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">最高连击</span>
+            <span id="end-combo" class="stat-value">0</span>
+          </div>
+        </div>
+        <div class="end-grade">
+          <span id="grade-letter">C</span>
+        </div>
+        <button id="restart-btn" class="valorant-btn">
+          <span class="btn-text">重新训练</span>
+          <span class="btn-slash"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Paused Indicator -->
+    <div id="paused-indicator" class="hidden">
+      <span>已暂停</span>
+      <span class="paused-hint">点击继续</span>
+    </div>
+
+    <!-- Mobile Controls -->
+    <div id="mobile-controls" class="hidden">
+      <div id="mobile-joystick">
+        <div id="joystick-base">
+          <div id="joystick-thumb"></div>
+        </div>
+      </div>
+      <div id="mobile-shoot-area">
+        <div id="mobile-shoot-btn">
+          <span class="shoot-icon">&#x25C9;</span>
+        </div>
+      </div>
+      <div id="mobile-reload-btn">
+        <span>R</span>
+      </div>
+    </div>
+
+    <!-- Boot Guard：当 game.js 未能加载（如用 file:// 直接打开）时给出明确提示，避免"点了没反应" -->
+    <div id="boot-guard" class="hidden">
+      <div class="boot-guard-box">
+        <div class="boot-guard-icon">!</div>
+        <div class="boot-guard-title">游戏脚本未能加载</div>
+        <div class="boot-guard-body">
+          <p>检测到你可能是<b>直接双击 index.html</b> 打开的页面（<code>file://</code> 协议）。
+             浏览器会拦截 ES Module 与模型文件，脚本无法执行，因此点击按钮没有反应。</p>
+          <p class="boot-guard-fix">
+            请改为：双击项目目录下的 <b>start.bat</b>，服务器会自动打开
+            <code>http://127.0.0.1:3000</code>。
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Three.js Import Map -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script>
+    // 启动守卫：game.js 是 ES Module，若因 file:// 等原因被浏览器 CORS 拦截，
+    // 页面不会有任何提示、点击按钮也毫无反应。这里显式探测并给出可执行的解决办法。
+    (function () {
+      var checks = 0;
+      var timer = setInterval(function () {
+        if (window.__GAME_BOOTED__) { clearInterval(timer); return; }
+        if (++checks >= 4) {              // 约 6 秒仍未启动 → 判定脚本未加载
+          clearInterval(timer);
+          var g = document.getElementById('boot-guard');
+          if (g) g.classList.remove('hidden');
+        }
+      }, 1500);
+    })();
+  </script>
+
+  <script type="module" src="js/game.js"></script>
+</body>
+</html>

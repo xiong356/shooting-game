@@ -1,0 +1,14 @@
+# 默认：仓库内统一存 LF，检出时由各平台自行决定
+* text=auto
+
+# Windows 批处理 / PowerShell 必须保持 CRLF。
+# start.bat 用 LF 行尾在 cmd.exe 下可能解析异常，而这个文件是项目的启动入口。
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制资源不做行尾转换
+*.glb binary
+*.png binary
+*.wav binary
+*.mp3 binary

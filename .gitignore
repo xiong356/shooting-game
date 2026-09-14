@@ -1,0 +1,23 @@
+# --- 开发过程产物，不公开 ---
+
+# 改动前的文件快照（过时版本，容易造成混淆）
+.workbuddy/backup/
+
+# 验证截图（体积大，README 只用 docs/screenshot.png 一张）
+.workbuddy/verify/
+
+# IDE / 助手工具的本地设置
+.codebuddy/
+.claude/
+.vscode/
+.idea/
+
+# --- 系统与依赖 ---
+node_modules/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# --- 日志 ---
+*.log
+npm-debug.log*
