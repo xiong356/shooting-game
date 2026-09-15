@@ -9,6 +9,9 @@ const SRC = fs.readFileSync(path.join(ROOT, 'js/game.js'), 'utf8');
 
 const fnMatch = SRC.match(/function resolveObstacleCollisions\(pos[^)]*\) \{[\s\S]*?\n\}/);
 if (!fnMatch) { console.log('抽不到 resolveObstacleCollisions'); process.exit(1); }
+// resolveObstacleCollisions 现在委托给 pushCircleOutOfObstacles，必须先拼进来
+const helperMatch = SRC.match(/function pushCircleOutOfObstacles\([\s\S]*?\n\}/);
+if (!helperMatch) { console.log('抽不到 pushCircleOutOfObstacles'); process.exit(1); }
 const grab = (name) => {
   const m = SRC.match(new RegExp('^const ' + name + ' = ([^;]+);', 'm'));
   if (!m) { console.log('抽不到常量 ' + name); process.exit(1); }
@@ -21,6 +24,7 @@ const build = new Function('obstacles',
   'const COLLISION_ITERATIONS = ' + grab('COLLISION_ITERATIONS') + ';\n' +
   'const MONSTER_RADIUS = ' + grab('MONSTER_RADIUS') + ';\n' +
   'const solidObstacles = obstacles;\n' +
+  helperMatch[0] + '\n' +
   fnMatch[0] + '\n' +
   'return { resolveObstacleCollisions, PLAYER_RADIUS, COLLISION_ITERATIONS, MONSTER_RADIUS };'
 );

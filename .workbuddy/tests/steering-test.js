@@ -28,8 +28,11 @@ function extractFn(src, name) {
   return null;
 }
 
-const FN_NAMES = ['resolveObstacleCollisions', 'getAdvance', 'isMonsterHeadOnBlocked',
-                  'getAvoidDir', 'stepMonsterChase', 'isPathClear', 'findDetourCorner'];
+const FN_NAMES = ['resolveObstacleCollisions', 'pushCircleOutOfObstacles',
+                  'resolveShoulderCollisions', 'isCapsulePathClear', 'getAdvance',
+                  'isMonsterHeadOnBlocked',
+                  'getAvoidDir', 'stepMonsterChase', 'isPathClear', 'findDetourCorner',
+                  'shouldChase'];
 
 /** 取一个顶层 const 的右值 */
 function grabConst(src, name) {
@@ -55,6 +58,8 @@ MathStub.random = function () { return rngValue; };
 function build(obstacles, steering) {
   const override = steering ? '' : 'function isMonsterHeadOnBlocked() { return false; }\n';
   const consts = ['PLAYER_RADIUS', 'COLLISION_ITERATIONS', 'MONSTER_RADIUS',
+                  'MONSTER_SHOULDER_OFFSET', 'MONSTER_SHOULDER_RADIUS',
+                  'MONSTER_DETOUR_MARGIN',
                   'MONSTER_BLOCKED_ADVANCE_MIN', 'MONSTER_AVOID_STRENGTH',
                   'MONSTER_PROBE_RADIUS']
     .map(function (n) { return 'const ' + n + ' = ' + grabConst(SRC, n) + ';'; })
@@ -89,7 +94,8 @@ function simulate(obstacles, start, player, frames, steering, rng) {
   for (let i = 0; i < frames; i++) {
     const d0 = Math.hypot(pos.x - player.x, pos.z - player.z);
     if (d0 < minDist) minDist = d0;
-    if (d0 <= stopDist) break;                 // 与游戏里一致：到 stopDist 就停
+    // 用从源码抽取的真实门控，不在这里抄一份 —— 抄一份的话门控改了测试不会红
+    if (!api.shouldChase(d0, stopDist, pos, player.x, player.z)) break;
     api.stepMonsterChase(pos, ud, player.x, player.z, speed, dt);
     if (ud.avoidSide) { avoidTicks++; sideUsed = ud.avoidSide; }
     if (process.env.TRACE && i % 300 === 0) {
@@ -100,6 +106,40 @@ function simulate(obstacles, start, player, frames, steering, rng) {
   const dEnd = Math.hypot(pos.x - player.x, pos.z - player.z);
   if (dEnd < minDist) minDist = dEnd;
   return { minDist: minDist, pos: pos, avoidTicks: avoidTicks, sideUsed: sideUsed };
+}
+
+const PR = Number(grabConst(SRC, 'PLAYER_RADIUS'));
+const MR_NUM = Number(grabConst(SRC, 'MONSTER_RADIUS'));
+
+/**
+ * 线段是否穿过任一障碍的实体部分（独立实现，不复用被测代码）。
+ * 端点不算 —— 贴障碍站立是合法状态。
+ */
+function blocked(ax, az, bx, bz, obstacles) {
+  const steps = 400;
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const px = ax + (bx - ax) * t;
+    const pz = az + (bz - az) * t;
+    for (const o of obstacles) {
+      if (px > o.minX && px < o.maxX && pz > o.minZ && pz < o.maxZ) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 「追到了」的完整判据：距离够近 **且** 终点与玩家之间没有障碍。
+ * ⚠️ 只用距离是不够的 —— 隔断厚 0.3m 时圆心距 0.3+PR+MR 可能已小于 stopDist，
+ * 野怪会隔着隔断就停下并「达标」。那种情况必须判失败。
+ */
+function reached(r, player, obstacles) {
+  return r.minDist <= 1.85 && !blocked(r.pos.x, r.pos.z, player.x, player.z, obstacles);
+}
+
+function reachedMsg(r, player, obstacles) {
+  const los = !blocked(r.pos.x, r.pos.z, player.x, player.z, obstacles);
+  return r.minDist.toFixed(2) + 'm  视线' + (los ? '通畅' : '被挡') + '  绕行' + r.avoidTicks + ' 帧';
 }
 
 console.log('=== 组 1：getAdvance ===');
@@ -147,7 +187,8 @@ console.log('=== 组 4：柱子正面（野怪在柱正后方，玩家在柱正�
   console.log('  无绕行: 最近 ' + noS.minDist.toFixed(2) + 'm（顶在柱子上）');
   ok(noS.minDist > 2.0, '【对照】无绕行时确实追不到（被柱子挡住）', noS.minDist.toFixed(2));
   ok(withS.avoidTicks > 0, '【关键】绕行逻辑被触发', withS.avoidTicks);
-  ok(withS.minDist <= 1.85, '【关键】有绕行时追到了玩家身边', withS.minDist.toFixed(2));
+  ok(reached(withS, player, [PILLAR]), '【关键】有绕行时追到了玩家身边（距离+视线）',
+     reachedMsg(withS, player, [PILLAR]));
   ok(withS.minDist < noS.minDist - 0.3, '有绕行明显优于无绕行',
      withS.minDist.toFixed(2) + ' vs ' + noS.minDist.toFixed(2));
 }
@@ -161,7 +202,8 @@ console.log('=== 组 5：长隔断正面（绕行距离更长）===');
     const withS = simulate([WALL], start, player, 3600, true, sides[k][0]);
     console.log('  ' + sides[k][1] + ': 最近 ' + withS.minDist.toFixed(2) + 'm，触发 ' +
                 withS.avoidTicks + ' 帧，侧=' + withS.sideUsed);
-    ok(withS.minDist <= 1.85, '【关键】' + sides[k][1] + '时绕过去追到了玩家', withS.minDist.toFixed(2));
+    ok(reached(withS, player, [WALL]), '【关键】' + sides[k][1] + '时绕过去追到了玩家（距离+视线）',
+       reachedMsg(withS, player, [WALL]));
   }
   const noS = simulate([WALL], start, player, 3600, false, 0.9);
   console.log('  无绕行: 最近 ' + noS.minDist.toFixed(2) + 'm（顶在隔断上）');
@@ -174,7 +216,8 @@ console.log('=== 组 6：畅通路径不应触发绕行 ===');
   const start  = { x: 10, z: 0 };    // 直线可达，无障碍
   const r = simulate([PILLAR, WALL], start, player, 1200, true, 0.9);
   ok(r.avoidTicks === 0, '无障碍时不触发绕行（不误伤正常追击）', r.avoidTicks);
-  ok(r.minDist <= 1.85, '正常追到玩家', r.minDist.toFixed(2));
+  ok(reached(r, player, [PILLAR, WALL]), '正常追到玩家（距离+视线）',
+     reachedMsg(r, player, [PILLAR, WALL]));
 }
 
 console.log('=== 组 7：斜向接近（主要靠沿墙滑行）===');
@@ -183,7 +226,31 @@ console.log('=== 组 7：斜向接近（主要靠沿墙滑行）===');
   const start  = { x: -16, z: 0 };
   const r = simulate([WALL], start, player, 3600, true, 0.9);
   console.log('  最近 ' + r.minDist.toFixed(2) + 'm，绕行触发 ' + r.avoidTicks + ' 帧');
-  ok(r.minDist <= 1.85, '斜向情况下也能追到玩家', r.minDist.toFixed(2));
+  ok(reached(r, player, [WALL]), '斜向情况下也能追到玩家（距离+视线）',
+     reachedMsg(r, player, [WALL]));
+}
+
+console.log('=== 组 8：玩家贴隔断（stopDist 短路回归用例）===');
+{
+  // 隔断厚 0.3m -> 隔着隔断的最小圆心距 = 0.3 + PR + MR_NUM，
+  // 修复前该值小于 stopDist，纯距离门控会让野怪在另一侧就判定「到位」并停下，
+  // stepMonsterChase 一次都不进（绕行 0 帧）—— 这正是本组要钉死的行为。
+  const player = { x: -7.85 + PR, z: 0 };   // 贴住隔断 +X 面
+  const start  = { x: -22, z: 0 };          // 另一侧远处
+  console.log('  隔着隔断的最小圆心距 = 0.3 + ' + PR + ' + ' + MR_NUM + ' = ' +
+              (0.3 + PR + MR_NUM).toFixed(2) + 'm（stopDist = 1.8m）');
+  const r = simulate([WALL], start, player, 3600, true, 0.9);
+  console.log('  终点 (' + r.pos.x.toFixed(2) + ',' + r.pos.z.toFixed(2) + ')  ' +
+              reachedMsg(r, player, [WALL]));
+  ok(!blocked(r.pos.x, r.pos.z, player.x, player.z, [WALL]),
+     '【关键】玩家贴隔断时野怪必须真的绕过来（而不是隔着隔断停下）',
+     reachedMsg(r, player, [WALL]));
+  ok(r.avoidTicks > 0, '绕行分支确实被进入（修复前恒为 0 帧，绕行形同虚设）', r.avoidTicks);
+
+  // 对照组：玩家离开隔断 1.85m（组 5 的位置）—— 修复前后都应通过
+  const far = { x: -6, z: 0 };
+  const r2 = simulate([WALL], start, far, 3600, true, 0.9);
+  ok(reached(r2, far, [WALL]), '【对照】玩家离隔断较远时同样追得到', reachedMsg(r2, far, [WALL]));
 }
 
 console.log('');

@@ -1966,20 +1966,44 @@ const PLAYER_RADIUS = 0.4;
 const COLLISION_ITERATIONS = 2;   // 多跑一遍，处理夹在两个障碍物夹角里的情况
 
 /**
- * 野怪碰撞半径。躯干宽 1.2、含肩甲最宽约 1.9，取 0.65 让身体边缘轻微陷入柱子 ——
+ * 野怪碰撞半径（中心圆）。躯干宽 1.2，取 0.65 让身体边缘轻微陷入柱子 ——
  * 视觉上是「贴着柱子」，而不是「离柱子还有一段距离就停住」。
+ * 肩甲/手臂的宽度（最远 1.25）由肩圆单独负责，见 MONSTER_SHOULDER_*。
  */
 const MONSTER_RADIUS = 0.65;
+/** 肩甲球心到躯干中心的水平距离（模型 SphereGeometry 位置 ±0.75） */
+const MONSTER_SHOULDER_OFFSET = 0.75;
+/** 肩甲球半径（与模型 SphereGeometry(0.5) 一致）；手臂/拳头横向范围 ⊂ 肩圆覆盖 */
+const MONSTER_SHOULDER_RADIUS = 0.5;
+/**
+ * 绕行拐角的外扩距离：肩圆把有效碰撞体变成宽 2.5 的胶囊，绕过墙角时身体中心
+ * 最坏需要离角点 偏移+半径 才不穿模，拐角目标必须按这个轮廓外扩。
+ * ⚠️ 不要复用 MONSTER_PROBE_RADIUS：它服务于 isPathClear 的采样半径，
+ * 受「必须小于 PLAYER_RADIUS」的承重不变量约束，两者职责不同。
+ */
+const MONSTER_DETOUR_MARGIN = MONSTER_SHOULDER_OFFSET + MONSTER_SHOULDER_RADIUS;
 /** 正面顶住的判定：朝玩家的有效推进量低于 期望步长 × 该值 时，认定不是滑行而是顶住 */
 const MONSTER_BLOCKED_ADVANCE_MIN = 0.3;
 /** 绕行时每帧的侧向位移，以步长为单位（仅在找不到绕行拐角时的兜底路径上用） */
 const MONSTER_AVOID_STRENGTH = 1.0;
 /**
- * 路径通畅性的探测半径，刻意小于碰撞半径。
+ * 路径通畅性的探测半径，刻意小于玩家碰撞半径 PLAYER_RADIUS。
  * 玩家常常紧贴障碍站立，若用完整半径，玩家本身就会落在障碍的「外扩区」内，
  * 导致任何拐角的路径判定都不通畅、绕行直接失效。
+ * ⚠️ 承重不变量：必须严格小于 PLAYER_RADIUS，见紧随其后的断言。
  */
 const MONSTER_PROBE_RADIUS = MONSTER_RADIUS * 0.6;
+
+// 承重不变量：探测半径必须严格小于玩家碰撞半径。
+// 玩家贴障碍时圆心距恰好被推出到 PLAYER_RADIUS，若 probe >= PLAYER_RADIUS，
+// isPathClear 对「拐角 -> 玩家」的每次采样都落在障碍外扩区内 -> 恒返回 false
+// -> findDetourCorner 永远返回 null -> 绕行静默退化成沿墙蹭。
+// 实测 probe = 0.41（仅比 0.4 大 1cm）贴墙场景下绕行就完全失效 —— 故在这里钉死。
+// 用 warn 而非 throw：与 registerSolid 的间距检查一致，坏掉的是手感不是数据。
+if (MONSTER_PROBE_RADIUS >= PLAYER_RADIUS) {
+  console.warn('MONSTER_PROBE_RADIUS (' + MONSTER_PROBE_RADIUS + ') 必须小于 PLAYER_RADIUS (' +
+    PLAYER_RADIUS + ')：否则玩家贴障碍站立时所有绕行拐角都判为不通畅，绕行会静默失效');
+}
 
 /**
  * 本帧朝玩家方向的「有效推进量」——即实际位移在期望方向上的投影。
@@ -2003,14 +2027,6 @@ function getAvoidDir(dirX, dirZ, avoidSide) {
 }
 
 /**
- * 野怪单帧的追逐位移：朝玩家走一步 -> 碰撞解算 -> 若正面顶住则绕行。
- * 抽成纯函数（只依赖 pos 的 x/z 与 ud.avoidSide）是为了能离线仿真验证 ——
- * 碰撞与绕行是这块最容易出错的地方，而实机里「正面顶住」的场景很难自然出现。
- * @param {{x:number,z:number}} pos        野怪位置，原地修改
- * @param {{avoidSide:number}} ud          野怪状态，会读写 avoidSide
- * @returns {number} 本帧朝玩家的有效推进量（正面顶住时接近 0）
- */
-/**
  * 两点之间的直线路径是否通畅（沿线段采样，检查是否穿过任何障碍的外扩区）。
  * 用 MONSTER_PROBE_RADIUS 而非碰撞半径 —— 理由见该常量的注释。
  */
@@ -2021,9 +2037,11 @@ function isPathClear(x0, z0, x1, z1) {
   if (dist < 1e-6) return true;
   // 探测半径取保护值 + 步数硬上限：任何一个常量为 0 或 undefined 时，
   // dist / 0 会得到 Infinity，没有上限的 for 循环会直接挂死。
+  // ⚠️ probe 必须同时喂给 steps 和 r2。只兜 steps 的话，r2 会退化成 0 / NaN，
+  // 比较恒为 false -> isPathClear 恒返回 true -> 绕行静默失效（不挂死，但更隐蔽）。
   const probe = MONSTER_PROBE_RADIUS > 0 ? MONSTER_PROBE_RADIUS : MONSTER_RADIUS;
   const steps = Math.max(2, Math.min(256, Math.ceil(dist / (probe * 0.5))));
-  const r2 = MONSTER_PROBE_RADIUS * MONSTER_PROBE_RADIUS;
+  const r2 = probe * probe;
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     const px = x0 + dx * t;
@@ -2040,17 +2058,35 @@ function isPathClear(x0, z0, x1, z1) {
 }
 
 /**
+ * 野怪是否应当继续追，而不是判定「已到位」停下。
+ *
+ * ⚠️ 不能只看距离。隔着 0.3m 隔断时，野怪与玩家的圆心距最小只有
+ * 0.3 + PLAYER_RADIUS + MONSTER_RADIUS = 1.35m，已经小于 stopDist 1.8m ——
+ * 纯距离门控会让野怪在掩体另一侧就判「到位」并停下，stepMonsterChase 一次都不进，
+ * 整套绕行分支形同虚设（玩家只要贴住隔断，绕行就永远用不上）。
+ * 故「到位」必须同时满足距离与视线：视线被挡就继续追，交给绕行去绕。
+ *
+ * 抽成纯函数是为了让离线仿真调用**真实实现**，而不是把门控抄一份进测试脚本 ——
+ * 抄一份的后果是门控改了测试不会红，即 CONTRIBUTING.md 说的「假验证」。
+ */
+function shouldChase(dist, stopDist, mPos, playerX, playerZ) {
+  return dist > stopDist || !isPathClear(mPos.x, mPos.z, playerX, playerZ);
+}
+
+/**
  * 找绕行目标点：所有障碍的「外扩角」里，到玩家路径通畅、且离野怪最近的那一个。
  * 朝拐角走 -> 绕过障碍 -> isPathClear 变真 -> 退出绕行恢复正常追逐。
  * 只靠「垂直于朝向平移」是不够的：长墙会让人沿着墙来回蹭，
  * 蹭到墙尽头后又被朝玩家的方向拉回墙的阴影里，永远绕不过去。
+ * 外扩距离用 MONSTER_DETOUR_MARGIN（肩圆轮廓）：胶囊体绕过墙角时身体中心
+ * 需要这么大的间隙，拐角太贴墙会导致绕行卡在角上转不过去。
  */
 function findDetourCorner(fromX, fromZ, playerX, playerZ) {
   let best = null;
   let bestDist = Infinity;
   for (const o of solidObstacles) {
-    const xs = [o.minX - MONSTER_PROBE_RADIUS, o.maxX + MONSTER_PROBE_RADIUS];
-    const zs = [o.minZ - MONSTER_PROBE_RADIUS, o.maxZ + MONSTER_PROBE_RADIUS];
+    const xs = [o.minX - MONSTER_DETOUR_MARGIN, o.maxX + MONSTER_DETOUR_MARGIN];
+    const zs = [o.minZ - MONSTER_DETOUR_MARGIN, o.maxZ + MONSTER_DETOUR_MARGIN];
     for (const cx of xs) {
       for (const cz of zs) {
         if (!isPathClear(cx, cz, playerX, playerZ)) continue;
@@ -2062,6 +2098,15 @@ function findDetourCorner(fromX, fromZ, playerX, playerZ) {
   return best;
 }
 
+/**
+ * 野怪单帧的追逐位移：朝玩家走一步 -> 碰撞解算（中心圆 + 肩圆）-> 若正面顶住则绕行。
+ * 抽成纯函数（只依赖 pos 的 x/z 与 ud.avoidSide）是为了能离线仿真验证 ——
+ * 碰撞与绕行是这块最容易出错的地方，而实机里「正面顶住」的场景很难自然出现。
+ * 肩圆 (dx,dz) 即本帧朝向，与 updateMonsters 的 lookAt 朝向一致。
+ * @param {{x:number,z:number}} pos        野怪位置，原地修改
+ * @param {{avoidSide:number}} ud          野怪状态，会读写 avoidSide
+ * @returns {number} 本帧朝玩家的有效推进量（正面顶住时接近 0）
+ */
 function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
   let dx = playerX - pos.x;
   let dz = playerZ - pos.z;
@@ -2072,10 +2117,10 @@ function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
 
   const step = speed * dt;
 
-  // 绕行模式：朝外扩拐角走，直到到玩家的路径通畅为止
+  // 绕行模式：朝外扩拐角走，直到整个身体到玩家的路径通畅为止
   if (ud.avoidSide) {
-    if (isPathClear(pos.x, pos.z, playerX, playerZ)) {
-      ud.avoidSide = 0;   // 路径已通，恢复正常追逐
+    if (isCapsulePathClear(pos, dx, dz, playerX, playerZ)) {
+      ud.avoidSide = 0;   // 胶囊体已完全绕过，恢复正常追逐
     } else {
       const corner = findDetourCorner(pos.x, pos.z, playerX, playerZ);
       if (corner) {
@@ -2091,6 +2136,7 @@ function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
         pos.z += av.z * step * MONSTER_AVOID_STRENGTH;
       }
       resolveObstacleCollisions(pos, MONSTER_RADIUS);
+      resolveShoulderCollisions(pos, dx, dz);
       return 0;
     }
   }
@@ -2100,7 +2146,11 @@ function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
   pos.x += dx * step;
   pos.z += dz * step;
 
-  if (!resolveObstacleCollisions(pos, MONSTER_RADIUS)) return step;
+  const centerHit = resolveObstacleCollisions(pos, MONSTER_RADIUS);
+  // 中心圆未挡也可能侧贴墙（肩甲插墙），肩圆必须独立执行。
+  // 推出方向垂直于朝向，不削减有效推进量，不会误触发绕行门控。
+  resolveShoulderCollisions(pos, dx, dz);
+  if (!centerHit) return step;
 
   // 被障碍挡住。斜向撞上时切向分量会自然保留（沿墙滑行），
   // 只有「正面顶住」才需要进入绕行模式 —— 用朝玩家的有效推进量区分这两种情况。
@@ -2112,9 +2162,62 @@ function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
 }
 
 /**
- * 把一个圆形碰撞体推出所有相交的实体障碍（圆 vs AABB）。玩家与野怪共用这一套。
+ * 把一个圆形碰撞体 (cx,cz,radius) 推出所有相交的实体障碍（圆 vs AABB），位移落到 pos 上。
  * 推出方向沿「AABB 上离圆心最近的点 → 圆心」的法线，因此天然支持**贴墙滑行** ——
  * 只有垂直于墙面的分量被抵消，切向分量保留，不会撞上就被卡死。
+ * cx/cz 允许与 pos 分离（肩圆场景：圆心在身体侧面，但被推时整个身体一起动）。
+ * @param {{x:number,z:number,y?:number}} pos  身体位置，原地修改（只动 x/z，不动 y）
+ * @param {number} cx        碰撞圆心 x
+ * @param {number} cz        碰撞圆心 z
+ * @param {number} radius    碰撞半径
+ * @returns {boolean}        本次是否发生过推出
+ */
+function pushCircleOutOfObstacles(pos, cx, cz, radius) {
+  let hit = false;
+  const startX = pos.x;
+  const startZ = pos.z;
+  for (const o of solidObstacles) {
+    // 已跳到障碍物顶面之上则不碰撞。当前跳跃高度 1.2m < 最矮障碍 1.8m，实际不会触发；
+    // 留着是为了以后加平台/矮掩体时不用回头改这里。
+    if (pos.y >= o.height) continue;
+
+    // 圆心随身体一起动：同一轮里被前一个障碍推出后，圆心要跟着平移再算下一个最近点
+    const ccx = cx + (pos.x - startX);
+    const ccz = cz + (pos.z - startZ);
+
+    // AABB 上离圆心最近的点
+    const nx = Math.max(o.minX, Math.min(ccx, o.maxX));
+    const nz = Math.max(o.minZ, Math.min(ccz, o.maxZ));
+    const dx = ccx - nx;
+    const dz = ccz - nz;
+    const d2 = dx * dx + dz * dz;
+    if (d2 >= radius * radius) continue;
+
+    hit = true;
+    if (d2 > 1e-8) {
+      // 圆心在盒外：沿最近点法线推出
+      const d = Math.sqrt(d2);
+      const push = (radius - d) / d;
+      pos.x += dx * push;
+      pos.z += dz * push;
+    } else {
+      // 圆心已在盒内（高速穿入或与障碍重叠）：沿最浅的那个面推出
+      const toMinX = ccx - o.minX;
+      const toMaxX = o.maxX - ccx;
+      const toMinZ = ccz - o.minZ;
+      const toMaxZ = o.maxZ - ccz;
+      const m = Math.min(toMinX, toMaxX, toMinZ, toMaxZ);
+      if (m === toMinX)      pos.x += (o.minX - radius) - ccx;
+      else if (m === toMaxX) pos.x += (o.maxX + radius) - ccx;
+      else if (m === toMinZ) pos.z += (o.minZ - radius) - ccz;
+      else                   pos.z += (o.maxZ + radius) - ccz;
+    }
+  }
+  return hit;
+}
+
+/**
+ * 把一个圆形碰撞体推出所有相交的实体障碍（圆 vs AABB）。玩家与野怪共用这一套。
  * @param {THREE.Vector3} pos    位置，原地修改（只动 x/z，不动 y）
  * @param {number} radius        碰撞半径，默认玩家半径
  * @returns {boolean}            本次是否发生过推出（野怪靠它判断「被挡住了」）
@@ -2122,44 +2225,44 @@ function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
 function resolveObstacleCollisions(pos, radius = PLAYER_RADIUS) {
   let pushedAny = false;
   for (let iter = 0; iter < COLLISION_ITERATIONS; iter++) {
-    let hit = false;
-    for (const o of solidObstacles) {
-      // 已跳到障碍物顶面之上则不碰撞。当前跳跃高度 1.2m < 最矮障碍 1.8m，实际不会触发；
-      // 留着是为了以后加平台/矮掩体时不用回头改这里。
-      if (pos.y >= o.height) continue;
-
-      // AABB 上离玩家最近的点
-      const cx = Math.max(o.minX, Math.min(pos.x, o.maxX));
-      const cz = Math.max(o.minZ, Math.min(pos.z, o.maxZ));
-      const dx = pos.x - cx;
-      const dz = pos.z - cz;
-      const d2 = dx * dx + dz * dz;
-      if (d2 >= radius * radius) continue;
-
-      hit = true;
-      if (d2 > 1e-8) {
-        // 圆心在盒外：沿最近点法线推出
-        const d = Math.sqrt(d2);
-        const push = (radius - d) / d;
-        pos.x += dx * push;
-        pos.z += dz * push;
-      } else {
-        // 圆心已在盒内（高速穿入或与障碍重叠）：沿最浅的那个面推出
-        const toMinX = pos.x - o.minX;
-        const toMaxX = o.maxX - pos.x;
-        const toMinZ = pos.z - o.minZ;
-        const toMaxZ = o.maxZ - pos.z;
-        const m = Math.min(toMinX, toMaxX, toMinZ, toMaxZ);
-        if (m === toMinX)      pos.x = o.minX - radius;
-        else if (m === toMaxX) pos.x = o.maxX + radius;
-        else if (m === toMinZ) pos.z = o.minZ - radius;
-        else                   pos.z = o.maxZ + radius;
-      }
-    }
-    if (!hit) break;   // 没有相交就提前结束，正常情况下只跑一遍
+    if (!pushCircleOutOfObstacles(pos, pos.x, pos.z, radius)) break;  // 没有相交就提前结束
     pushedAny = true;
   }
   return pushedAny;
+}
+
+/**
+ * 胶囊体（中心 + 双肩圆）到玩家的直线路径是否全部通畅。
+ * 绕行退出条件不能只看中心点：中心刚过墙角时视线已通，但拖在后面的肩圆
+ * 还会被墙角挂住、把身体推回，推进量为负 → 误判「正面顶住」→ 重新进入绕行，
+ * 表现为在墙角来回抖动。三个点都通畅才退出，保证整个身体真的绕过来了。
+ */
+function isCapsulePathClear(pos, dirX, dirZ, playerX, playerZ) {
+  if (!isPathClear(pos.x, pos.z, playerX, playerZ)) return false;
+  for (const side of [-1, 1]) {
+    const sx = pos.x - dirZ * side * MONSTER_SHOULDER_OFFSET;
+    const sz = pos.z + dirX * side * MONSTER_SHOULDER_OFFSET;
+    if (!isPathClear(sx, sz, playerX, playerZ)) return false;
+  }
+  return true;
+}
+
+/**
+ * 侧贴墙防穿模：两个随朝向 (dirX,dirZ) 旋转的「肩圆」，把整体 pos 推出障碍。
+ * 中心圆 MONSTER_RADIUS 只管躯干，肩甲/手臂最远到 1.25，侧贴墙滑行时会插进墙里 ——
+ * 肩圆与模型肩甲球同尺寸同位置，推出后肩甲恰好贴墙。推出方向垂直于朝向，
+ * 不削减朝玩家的有效推进量，因此不会误触发绕行门控。
+ */
+function resolveShoulderCollisions(pos, dirX, dirZ) {
+  for (let iter = 0; iter < COLLISION_ITERATIONS; iter++) {
+    let hit = false;
+    for (const side of [-1, 1]) {
+      const sx = pos.x - dirZ * side * MONSTER_SHOULDER_OFFSET;
+      const sz = pos.z + dirX * side * MONSTER_SHOULDER_OFFSET;
+      if (pushCircleOutOfObstacles(pos, sx, sz, MONSTER_SHOULDER_RADIUS)) hit = true;
+    }
+    if (!hit) break;
+  }
 }
 
 function updateMovement(dt) {
@@ -2860,8 +2963,9 @@ function updateMonsters(dt) {
       // 面朝玩家
       monster.lookAt(playerPosition.x, monster.position.y, playerPosition.z);
 
-      // 追逐（匀速，保持距离）。碰撞与正面绕行都在 stepMonsterChase 内部
-      if (dist > ud.stopDist) {
+      // 追逐（匀速，保持距离）。碰撞与正面绕行都在 stepMonsterChase 内部。
+      // 门控用 shouldChase（距离 + 视线），不是纯距离 —— 理由见该函数的注释
+      if (shouldChase(dist, ud.stopDist, monster.position, playerPosition.x, playerPosition.z)) {
         stepMonsterChase(monster.position, ud, playerPosition.x, playerPosition.z, ud.chaseSpeed, dt);
       }
     } else if (wasAlert) {
@@ -3346,3 +3450,4 @@ window.__SNAPSHOT__.obstacles     = () => solidObstacles.map(o => ({...o}));
 
 // Boot
 init();
+  x
