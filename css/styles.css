@@ -359,18 +359,8 @@ html, body {
   border-radius: 50%;
 }
 
-/* Crosshair recoil animation */
-#crosshair .crosshair-line {
-  transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1);
-}
-#crosshair .crosshair-dot {
-  transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1);
-}
-#crosshair.recoil .crosshair-line.top    { transform: translateX(-50%) translateY(7px); }
-#crosshair.recoil .crosshair-line.bottom { transform: translateX(-50%) translateY(-7px); }
-#crosshair.recoil .crosshair-line.left   { transform: translateY(-50%) translateX(7px); }
-#crosshair.recoil .crosshair-line.right  { transform: translateY(-50%) translateX(-7px); }
-#crosshair.recoil .crosshair-dot         { transform: translate(-50%, -50%) scale(1.6); }
+/* 准星扩散由 game.js updateCrosshairSpread() 每帧直接写 transform，
+   这里刻意不加 transition：JS 驱动下 transition 会拖帧且与逐帧赋值冲突 */
 
 /* ---- Bottom Bar ---- */
 #bottom-bar {

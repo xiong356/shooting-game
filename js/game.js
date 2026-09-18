@@ -2976,6 +2976,32 @@ const recoilMaxPitch = 0.30;    // 垂直后坐上限 (~17°)
 const recoilMaxYaw = 0.06;      // 水平偏移上限
 const recoilRecover = 3.5;      // 后坐力衰减速率（越大回正越快）
 
+// ---- Layer 1: 移动 inaccuracy（CS:GO 风格散布）----
+const SPREAD_PER_SPEED = 0.0625; // rad/(m/s)：开火移速 2.4 → 0.15 rad → 10m 处散布半径约 1.5m（轻微档）
+const SPREAD_AIR_MULT = 2.5;     // 空中（未落地）惩罚倍率：跳射大幅变飘
+const SPREAD_RECOVER = 8;        // 急停回零衰减速率，约 0.3s 收敛
+const SPREAD_CROSSHAIR_PX = 300; // 准星映射：总散布(rad) × 300 = 四线张开增量(px)
+const SPREAD_CROSSHAIR_MAX = 60; // 准星最大张开量(px)，极端散布下也不糊住屏幕中心
+
+/**
+ * 纯函数：水平移速 + 是否滞空 → inaccuracy 角度（rad）。
+ * 口径：SPREAD_PER_SPEED × 2.4 = 0.15 rad → 10m 落点散布半径 ≈ 1.5m。
+ * 保持无副作用，供离线测试从源码抽取直接求值（.workbuddy/tests/spread-test.js）。
+ */
+function getInaccuracyAngle(hSpeed, airborne) {
+  let a = hSpeed * SPREAD_PER_SPEED;
+  if (airborne) a *= SPREAD_AIR_MULT;
+  return a;
+}
+
+let inaccuracy = 0;   // 当前散布角（rad），每帧追赶 getInaccuracyAngle 目标值
+
+// ---- Layer 2: spray pattern ----
+// 确定性水平后坐图案（单位 = recoilYawPerShot），按连发序号取模循环。
+// 首项 0 → 单发点射近似垂直上抬；后续正负交替形成可练习的固定弹道形状。
+const SPRAY_YAW_PATTERN = [0, 0.4, -0.3, 0.6, -0.5, 0.8, -0.7, 0.5, -0.9, 0.7];
+let sprayIndex = 0;   // 连发序号，后坐完全回正时复位
+
 function getGunWorldPosition() {
   if (!fpsWeapon) {
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
@@ -3004,26 +3030,37 @@ function shoot() {
   state.currentAmmo--;
   state.shotsFired++;
 
-  // Apply recoil: vertical kick + random horizontal drift (accumulates when full-auto)
+  // Apply recoil: vertical kick + pattern-driven horizontal (spray pattern, deterministic)
   recoilPitch = Math.min(recoilPitch + recoilPerShot, recoilMaxPitch);
   recoilYaw = Math.max(-recoilMaxYaw, Math.min(recoilMaxYaw,
-    recoilYaw + (Math.random() - 0.5) * recoilYawPerShot * 2));
+    recoilYaw + SPRAY_YAW_PATTERN[sprayIndex % SPRAY_YAW_PATTERN.length] * recoilYawPerShot));
+  sprayIndex++;
   weaponKick = 1;
 
   // Muzzle flash
   const gunPos = getGunWorldPosition();
   const shootDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-  spawnMuzzleFlash(gunPos.clone().add(shootDir.clone().multiplyScalar(0.3)), shootDir);
 
-  // Recoil crosshair animation
-  crosshair.classList.add('recoil');
-  setTimeout(() => crosshair.classList.remove('recoil'), 120);
+  // 层 1：移动 inaccuracy——在相机朝向上叠加随机锥面偏移（均匀圆盘采样，小偏移不偏中心）
+  let spreadDir = shootDir.clone();
+  if (inaccuracy > 0) {
+    const theta = Math.random() * Math.PI * 2;
+    const r = inaccuracy * Math.sqrt(Math.random());
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+    spreadDir.addScaledVector(right, Math.cos(theta) * r).addScaledVector(up, Math.sin(theta) * r).normalize();
+  }
+
+  spawnMuzzleFlash(gunPos.clone().add(spreadDir.clone().multiplyScalar(0.3)), spreadDir);
 
   // Update ammo UI
   updateAmmoUI();
 
   // Raycast for monster hit（已死亡的野怪不再参与命中判定）
-  raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+  // 命中/拖尾/撞墙全部基于偏移后的 spreadDir，准星只负责瞄准，弹道允许飘。
+  // camera 是 scene 直接子级且 scene 无变换，getWorldPosition 与 setFromCamera
+  // 的射线原点等价（getWorldPosition 会先刷新世界矩阵，取到的是最新值）。
+  raycaster.set(camera.getWorldPosition(new THREE.Vector3()), spreadDir);
   const monsterMeshes = [];
   monsters.forEach(m => {
     if (m.userData.dying) return;
@@ -3039,10 +3076,10 @@ function shoot() {
   }
 
   // 穿墙修复：以相机射线为基准（与野怪命中距离同源）求最近障碍遮挡距离，
-  // 障碍比野怪更近时子弹被墙挡住，不再隔墙判定命中
+  // 障碍比野怪更近时子弹被墙挡住，不再隔墙判定命中。遮挡作用于偏移后的弹道。
   const camPos = raycaster.ray.origin;
   const wallT = rayHitObstacleDistance(camPos.x, camPos.y, camPos.z,
-    shootDir.x, shootDir.y, shootDir.z);
+    spreadDir.x, spreadDir.y, spreadDir.z);
   const blockedByWall = hitMonster !== null && wallT < intersects[0].distance;
 
   if (hitMonster && !blockedByWall) {
@@ -3084,7 +3121,7 @@ function shoot() {
     state.combo = 0;   // 脱靶打断连击
     // 弹道拖尾止步于最近障碍（无遮挡时 40m），不再视觉上穿墙
     const trailDist = Math.min(wallT, 40);
-    const missPoint = camPos.clone().add(shootDir.clone().multiplyScalar(trailDist));
+    const missPoint = camPos.clone().add(spreadDir.clone().multiplyScalar(trailDist));
     if (Number.isFinite(wallT)) {
       spawnParticles(missPoint, '#9aa5b1', 6);   // 撞墙碎屑反馈
     }
@@ -3245,9 +3282,54 @@ function updateRecoil(dt) {
   weaponKick *= decay;
 
   // 防止数值残渣累积
-  if (Math.abs(recoilPitch) < 0.0001) recoilPitch = 0;
+  // 垂直后坐完全回正 = 这一轮连发结束，spray pattern 序号复位，下轮从图案起点开始
+  if (Math.abs(recoilPitch) < 0.0001) { recoilPitch = 0; sprayIndex = 0; }
   if (Math.abs(recoilYaw) < 0.0001) recoilYaw = 0;
   if (weaponKick < 0.001) weaponKick = 0;
+}
+
+/**
+ * 层 1 状态更新：inaccuracy 追赶 getInaccuracyAngle(本帧水平速度, 滞空)。
+ * 升快落慢的不对称响应：加速时直接跳到目标（CS:GO 里移动惩罚即时生效），
+ * 减速时指数衰减（急停后约 0.3s 才变准，而不是当帧归零）。
+ */
+function updateInaccuracy(dt) {
+  const target = getInaccuracyAngle(locomotion.speed, !isGrounded);
+  if (target > inaccuracy) {
+    inaccuracy = target;
+  } else {
+    inaccuracy *= Math.exp(-SPREAD_RECOVER * dt);
+    if (inaccuracy < 0.0001) inaccuracy = 0;   // 防止数值残渣累积
+  }
+}
+
+// 准星四线与中心点：transform 由 JS 每帧驱动（见 updateCrosshairSpread）
+const crosshairLineEls = {
+  top:    crosshair.querySelector('.crosshair-line.top'),
+  bottom: crosshair.querySelector('.crosshair-line.bottom'),
+  left:   crosshair.querySelector('.crosshair-line.left'),
+  right:  crosshair.querySelector('.crosshair-line.right'),
+};
+const crosshairDotEl = crosshair.querySelector('.crosshair-dot');
+let lastSpreadPx = -1;   // 上次写入 DOM 的值，避免每帧冗余样式重算
+
+/**
+ * 准星连续扩散：四线间距每帧映射当前总散布（层 1 inaccuracy + 层 2 后坐），
+ * 直观提示「现在开枪飘不飘」。位移方向为向外张开；必须保留各线基础的
+ * 居中 translate（top/bottom 是 translateX(-50%)，left/right 是 translateY(-50%)），
+ * 否则线会跳位。
+ */
+function updateCrosshairSpread() {
+  const spreadPx = Math.min(SPREAD_CROSSHAIR_MAX,
+    (inaccuracy + Math.abs(recoilPitch) + Math.abs(recoilYaw)) * SPREAD_CROSSHAIR_PX);
+  if (Math.abs(spreadPx - lastSpreadPx) < 0.1) return;   // 变化过小不写 DOM
+  lastSpreadPx = spreadPx;
+  const half = spreadPx / 2;
+  crosshairLineEls.top.style.transform = `translateX(-50%) translateY(${-half}px)`;
+  crosshairLineEls.bottom.style.transform = `translateX(-50%) translateY(${half}px)`;
+  crosshairLineEls.left.style.transform = `translateY(-50%) translateX(${-half}px)`;
+  crosshairLineEls.right.style.transform = `translateY(-50%) translateX(${half}px)`;
+  crosshairDotEl.style.transform = `translate(-50%, -50%) scale(${1 + spreadPx / 40})`;
 }
 
 // ============================================
@@ -3585,6 +3667,8 @@ function startGame() {
   recoilPitch = 0;
   recoilYaw = 0;
   weaponKick = 0;
+  inaccuracy = 0;    // 散布状态必须复位，否则重开局继承上一局的移动惩罚
+  sprayIndex = 0;
   // 受击反馈复位：否则重开局会带着上一局的抖动/红闪残渣
   shakeT = 0;
   hurtFlashOpacity = 0;
@@ -3740,6 +3824,8 @@ function update(dt) {
     updateReload(cappedDT);
     updateMovement(cappedDT);
     updateRecoil(cappedDT);
+    updateInaccuracy(cappedDT);   // 依赖本帧 updateMovement 后的 locomotion.speed/isGrounded
+    updateCrosshairSpread();
     updateMonsters(cappedDT);
     // 胜利判定：死亡动画播完的野怪会从 monsters 移除，数组清空即全歼
     if (monsters.length === 0) {
