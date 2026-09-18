@@ -47,6 +47,11 @@ const damageFlashEl   = document.getElementById('damage-flash');
 // ⚠️ 必须声明在 state 对象之前：state 在模块加载期求值，引用后声明的 const 会 TDZ 报错
 const PLAYER_MAX_HEALTH = 100;
 
+// ---- 结算计分 ----
+const SCORE_PER_HIT = 10;        // 命中一发
+const SCORE_PER_HEADSHOT = 25;   // 爆头额外奖励
+const SCORE_PER_KILL = 100;      // 击杀奖励
+
 // ============================================
 // GAME STATE
 // ============================================
@@ -65,6 +70,14 @@ const state = {
   redAlive: 0,
   blueAlive: 0,
   playerHealth: PLAYER_MAX_HEALTH,
+  // 结算统计
+  kills: 0,
+  headshots: 0,      // 爆头命中次数
+  shotsFired: 0,
+  shotsHit: 0,
+  combo: 0,          // 当前连续命中
+  maxCombo: 0,
+  score: 0,
 };
 
 // ============================================
@@ -1015,6 +1028,8 @@ function killMonster(monster) {
 
   addKillFeed(ud.type === 'red' ? '猩红石像' : '蔚蓝石像', ud.type);
   playKillSound();
+  state.kills++;
+  state.score += SCORE_PER_KILL;
   updateUI();   // 存活数要立刻掉，不能等动画播完
 }
 
@@ -2953,6 +2968,7 @@ function shoot() {
   canShoot = false;
   shootTimer = shootCooldown;
   state.currentAmmo--;
+  state.shotsFired++;
 
   // Apply recoil: vertical kick + random horizontal drift (accumulates when full-auto)
   recoilPitch = Math.min(recoilPitch + recoilPerShot, recoilMaxPitch);
@@ -2993,6 +3009,16 @@ function shoot() {
     const isHeadshot = intersects[0].object.name === 'head';
     const wasKilled = damageMonster(hitMonster, isHeadshot);
 
+    // 命中统计与计分（连击：连续命中累加，脱靶清零）
+    state.shotsHit++;
+    state.combo++;
+    if (state.combo > state.maxCombo) state.maxCombo = state.combo;
+    state.score += SCORE_PER_HIT;
+    if (isHeadshot) {
+      state.headshots++;
+      state.score += SCORE_PER_HEADSHOT;
+    }
+
     spawnParticles(hitPoint, isHeadshot ? '#ffd700' : '#ffaa00', isHeadshot ? 18 : 12);
     if (isHeadshot) playHeadshotSound(); else playHitSound();
     showHitMarker(isHeadshot);
@@ -3014,6 +3040,7 @@ function shoot() {
       }, 100);
     }
   } else {
+    state.combo = 0;   // 脱靶打断连击
     const missPoint = gunPos.clone().add(shootDir.clone().multiplyScalar(40));
     spawnBulletTrail(gunPos, missPoint);
   }
@@ -3499,6 +3526,14 @@ function startGame() {
   state.redAlive = 0;
   state.blueAlive = 0;
   state.playerHealth = PLAYER_MAX_HEALTH;
+  // 结算统计复位
+  state.kills = 0;
+  state.headshots = 0;
+  state.shotsFired = 0;
+  state.shotsHit = 0;
+  state.combo = 0;
+  state.maxCombo = 0;
+  state.score = 0;
   shootTimer = 0;
   canShoot = true;
   recoilPitch = 0;
@@ -3606,11 +3641,14 @@ function endGame(reason = 'time') {
   const victory = reason === 'victory';
   const titleEl = document.getElementById('end-title');
   if (titleEl) titleEl.textContent = dead ? '你已阵亡' : (victory ? '胜利' : '训练结束');
-  document.getElementById('end-score').textContent = dead ? '阵亡' : (victory ? '清剿完成' : '训练完成');
-  document.getElementById('end-kills').textContent    = '--';
-  document.getElementById('end-headshots').textContent = '--';
-  document.getElementById('end-accuracy').textContent  = '--';
-  document.getElementById('end-combo').textContent     = '--';
+
+  // 结算数据：全部来自本局真实统计
+  const pct = (num, den) => den > 0 ? Math.round(num / den * 100) + '%' : '0%';
+  document.getElementById('end-score').textContent = state.score;
+  document.getElementById('end-kills').textContent    = state.kills;
+  document.getElementById('end-headshots').textContent = pct(state.headshots, state.shotsHit);  // 爆头率 = 爆头命中 / 总命中
+  document.getElementById('end-accuracy').textContent  = pct(state.shotsHit, state.shotsFired); // 命中率 = 命中 / 开枪
+  document.getElementById('end-combo').textContent     = state.maxCombo;
 
   document.getElementById('grade-letter').textContent = dead ? 'F' : (victory ? 'S' : 'PvE');
 }
