@@ -898,7 +898,7 @@ function spawnMonsters(count) {
       ...monster.userData,
       id: i,
       alert: false,
-      alertZone: 16,
+      alertZone: 24,
       chaseSpeed: 2.5,
       // 红怪贴脸近战（1.8m）；蓝怪停在施法射程处只丢弹不靠近，体现远程定位。
       // 蓝怪用 BLUE_CAST_RANGE：shouldChase 在「距离 ≤ stopDist 且视线通畅」时返回
@@ -3252,7 +3252,7 @@ const RED_MELEE_LEAN = 0.1;        // 前摇时身体前倾（rad）
 // --- 蓝怪远程（低伤害）---
 const BLUE_CAST_DAMAGE = 10;
 const BLUE_CAST_COOLDOWN = 1.5;
-const BLUE_CAST_RANGE = 8;         // 追击途中开火的最大距离
+const BLUE_CAST_RANGE = 12;        // 施法射程：也是蓝怪的停步距离（stopDist），进射程即停下开火
 const BLUE_CAST_TIME = 0.4;        // 吟唱（后仰蓄力 + 宝石亮起预警）
 const BLUE_CAST_RECOIL = 0.15;     // 发射后的前倾投掷姿态时长，随后复位
 const BLUE_CAST_LEAN_BACK = -0.15; // 吟唱后仰（rad）
@@ -3601,17 +3601,18 @@ function endGame(reason = 'time') {
 
   playGameEndSound();
 
-  // 死亡结算与正常结束区分：标题、评级不同
+  // 三种结局区分：胜利 / 死亡 / 其他（标题、评级不同）
   const dead = reason === 'death';
+  const victory = reason === 'victory';
   const titleEl = document.getElementById('end-title');
-  if (titleEl) titleEl.textContent = dead ? '你已阵亡' : '训练结束';
-  document.getElementById('end-score').textContent = dead ? '阵亡' : '训练完成';
+  if (titleEl) titleEl.textContent = dead ? '你已阵亡' : (victory ? '胜利' : '训练结束');
+  document.getElementById('end-score').textContent = dead ? '阵亡' : (victory ? '清剿完成' : '训练完成');
   document.getElementById('end-kills').textContent    = '--';
   document.getElementById('end-headshots').textContent = '--';
   document.getElementById('end-accuracy').textContent  = '--';
   document.getElementById('end-combo').textContent     = '--';
 
-  document.getElementById('grade-letter').textContent = dead ? 'F' : 'PvE';
+  document.getElementById('grade-letter').textContent = dead ? 'F' : (victory ? 'S' : 'PvE');
 }
 
 function restartGame() {
@@ -3656,6 +3657,10 @@ function update(dt) {
     updateMovement(cappedDT);
     updateRecoil(cappedDT);
     updateMonsters(cappedDT);
+    // 胜利判定：死亡动画播完的野怪会从 monsters 移除，数组清空即全歼
+    if (monsters.length === 0) {
+      endGame('victory');
+    }
     updateParticles(cappedDT);
     updateBulletTrails(cappedDT);
     updateMonsterProjectiles(cappedDT);
