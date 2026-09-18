@@ -29,7 +29,7 @@ function extractFn(src, name) {
   return null;
 }
 
-const FN_NAMES = ['projectileHitObstacle', 'projectileHitPlayer'];
+const FN_NAMES = ['projectileHitObstacle', 'projectileHitPlayer', 'rayHitObstacleDistance'];
 
 /** 取一个顶层 const 的右值 */
 function grabConst(src, name) {
@@ -49,7 +49,7 @@ function build(obstacles) {
   const consts = ['PLAYER_RADIUS', 'PLAYER_HEIGHT', 'BLUE_PROJ_RADIUS']
     .map(function (n) { return 'const ' + n + ' = ' + grabConst(SRC, n) + ';'; })
     .join('\n');
-  const ret = 'return { projectileHitObstacle, projectileHitPlayer, PLAYER_RADIUS, PLAYER_HEIGHT, BLUE_PROJ_RADIUS };';
+  const ret = 'return { projectileHitObstacle, projectileHitPlayer, rayHitObstacleDistance, PLAYER_RADIUS, PLAYER_HEIGHT, BLUE_PROJ_RADIUS };';
   return new Function('obstacles',
     'const solidObstacles = obstacles;\n' + consts + '\n' + fns + ret
   )(obstacles);
@@ -103,6 +103,35 @@ console.log('=== 组 4：负向对照（半径传 0 → 退化为点检测）===
   ok(!api.projectileHitObstacle(1.001, 1, 0, 0), '半径 0：盒外点不命中（无外扩）');
   ok(api.projectileHitPlayer(api.PLAYER_RADIUS * 0.5, 1, 0, 0, 0, 0), '半径 0：玩家半径内仍命中');
   ok(!api.projectileHitPlayer(api.PLAYER_RADIUS * 1.5, 1, 0, 0, 0, 0), '半径 0：玩家半径外不命中');
+}
+
+console.log('=== 组 5：子弹射线遮挡 rayHitObstacleDistance（穿墙修复）===');
+{
+  const api = build([box]);
+  const inf = Infinity;
+  // 正对盒子：从 x=-5 朝 +x 打，入射面 minX=-1 → t=4
+  ok(Math.abs(api.rayHitObstacleDistance(-5, 1, 0, 1, 0, 0) - 4) < 1e-9, '正对障碍命中，t=入射面距离');
+  // 高度门控：y=3 高于盒顶（height=2）的水平射线穿过
+  ok(api.rayHitObstacleDistance(-5, 3, 0, 1, 0, 0) === inf, '弹道高于障碍时不遮挡');
+  // 侧向擦边：z=2 在盒体外（maxZ=1）
+  ok(api.rayHitObstacleDistance(-5, 1, 2, 1, 0, 0) === inf, '射线从旁边飞过不遮挡');
+  // 反向：障碍在身后不遮挡
+  ok(api.rayHitObstacleDistance(-5, 1, 0, -1, 0, 0) === inf, '背对障碍不遮挡');
+  // 起点在盒内：贴墙时枪口探进墙体，不算遮挡
+  ok(api.rayHitObstacleDistance(0, 1, 0, 1, 0, 0) === inf, '起点在盒内跳过该盒');
+  // 斜向对角入射：origin(-5,1,-5) dir(1,0,1)/√2 → 角点(-1,-1)，t=4√2
+  const d = 1 / Math.SQRT2;
+  ok(Math.abs(api.rayHitObstacleDistance(-5, 1, -5, d, 0, d) - 4 * Math.SQRT2) < 1e-9, '斜向命中角点，t=4√2');
+  // 俯射：origin(-5,4,0) dir(0.8,-0.6,0)，入 x 面时 t=5、y=1（在盒高内）→ 命中正面
+  ok(Math.abs(api.rayHitObstacleDistance(-5, 4, 0, 0.8, -0.6, 0) - 5) < 1e-9, '俯射：降到盒高范围内命中正面 t=5');
+  // 仰射穿过：origin(-5,1,0) dir(0.6,0.8,0)，入 x 面（t≈6.67）时 y 已超盒顶 → 不遮挡
+  ok(api.rayHitObstacleDistance(-5, 1, 0, 0.6, 0.8, 0) === inf, '仰射：升到盒顶以上穿过');
+  // 多障碍取最近：远处再放一个同轴盒子（t=10），乱序传入验证不是取第一个命中
+  const boxFar = { minX: 5, maxX: 7, minZ: -1, maxZ: 1, height: 2 };
+  const api2 = build([boxFar, box]);
+  ok(Math.abs(api2.rayHitObstacleDistance(-5, 1, 0, 1, 0, 0) - 4) < 1e-9, '多障碍返回最近者');
+  // 无障碍
+  ok(build([]).rayHitObstacleDistance(0, 1, 0, 1, 0, 0) === inf, '空旷处永远不遮挡');
 }
 
 console.log('\nPLAYER_RADIUS=' + build([]).PLAYER_RADIUS +

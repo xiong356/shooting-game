@@ -182,6 +182,40 @@ function registerSolid(x, z, width, depth, height) {
   solidObstacles.push(box);
 }
 
+/**
+ * 射线 vs 实体障碍：返回沿射线方向最近命中的距离 t（米），无遮挡返回 Infinity。
+ * 障碍是贴地长方体（y ∈ [0, height]），方向须为单位向量。slab 法逐轴求交集。
+ * 起点在盒子内部时跳过该盒：贴墙时枪口/相机可能探进墙体 AABB，
+ * 若按「命中」算会把整条视线误判成被挡。
+ * 抽成纯函数供离线仿真验证（.workbuddy/tests/attack-test.js）。
+ */
+function rayHitObstacleDistance(ox, oy, oz, dx, dy, dz) {
+  let best = Infinity;
+  for (const o of solidObstacles) {
+    const slabs = [
+      [ox, o.minX, o.maxX, dx],
+      [oy, 0, o.height, dy],
+      [oz, o.minZ, o.maxZ, dz],
+    ];
+    let tmin = -Infinity, tmax = Infinity, miss = false;
+    for (const [orig, lo, hi, d] of slabs) {
+      if (Math.abs(d) < 1e-12) {
+        if (orig < lo || orig > hi) { miss = true; break; }   // 平行且在该轴盒外 → 永不相交
+        continue;
+      }
+      let t1 = (lo - orig) / d, t2 = (hi - orig) / d;
+      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) { miss = true; break; }
+    }
+    if (miss) continue;
+    if (tmin < 0) continue;                 // 起点在盒内，不算遮挡
+    if (tmin < best) best = tmin;
+  }
+  return best;
+}
+
 function createEnvironment() {
   const env = new THREE.Group();
   scene.add(env);
@@ -912,7 +946,7 @@ function spawnMonsters(count) {
       id: i,
       alert: false,
       alertZone: 24,
-      chaseSpeed: 2.5,
+      chaseSpeed: 5.0,   // 追击速度（原 2.5 翻倍：慢走 4.2 甩不掉，需疾跑或绕掩体）
       // 红怪贴脸近战（1.8m）；蓝怪停在施法射程处只丢弹不靠近，体现远程定位。
       // 蓝怪用 BLUE_CAST_RANGE：shouldChase 在「距离 ≤ stopDist 且视线通畅」时返回
       // false，进射程即停下开火；视线被挡时仍会绕行找角度（不会隔墙干瞪眼）。
@@ -3004,7 +3038,14 @@ function shoot() {
     }
   }
 
-  if (hitMonster) {
+  // 穿墙修复：以相机射线为基准（与野怪命中距离同源）求最近障碍遮挡距离，
+  // 障碍比野怪更近时子弹被墙挡住，不再隔墙判定命中
+  const camPos = raycaster.ray.origin;
+  const wallT = rayHitObstacleDistance(camPos.x, camPos.y, camPos.z,
+    shootDir.x, shootDir.y, shootDir.z);
+  const blockedByWall = hitMonster !== null && wallT < intersects[0].distance;
+
+  if (hitMonster && !blockedByWall) {
     const hitPoint = intersects[0].point;
     const isHeadshot = intersects[0].object.name === 'head';
     const wasKilled = damageMonster(hitMonster, isHeadshot);
@@ -3041,7 +3082,12 @@ function shoot() {
     }
   } else {
     state.combo = 0;   // 脱靶打断连击
-    const missPoint = gunPos.clone().add(shootDir.clone().multiplyScalar(40));
+    // 弹道拖尾止步于最近障碍（无遮挡时 40m），不再视觉上穿墙
+    const trailDist = Math.min(wallT, 40);
+    const missPoint = camPos.clone().add(shootDir.clone().multiplyScalar(trailDist));
+    if (Number.isFinite(wallT)) {
+      spawnParticles(missPoint, '#9aa5b1', 6);   // 撞墙碎屑反馈
+    }
     spawnBulletTrail(gunPos, missPoint);
   }
 
