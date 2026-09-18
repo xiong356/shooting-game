@@ -46,6 +46,10 @@
 
       <!-- Bottom Bar -->
       <div id="bottom-bar">
+        <div id="health-display">
+          <span id="health-current">100</span>
+          <div id="health-bar"><div id="health-fill"></div></div>
+        </div>
         <div id="ammo-display">
           <span id="ammo-current">30</span>
           <span class="ammo-divider">/</span>
@@ -61,6 +65,9 @@
           <span>!</span>
         </div>
       </div>
+
+      <!-- Damage flash（受击红闪，全屏覆盖层，pointer-events:none） -->
+      <div id="damage-flash" class="hidden"></div>
 
       <!-- Hit Marker (absolute center) -->
       <div id="hit-marker" class="hidden"></div>
@@ -109,7 +116,7 @@
     <!-- End Screen -->
     <div id="end-screen" class="hidden">
       <div class="end-content">
-        <div class="end-title">训练结束</div>
+        <div class="end-title" id="end-title">训练结束</div>
         <div class="end-divider"></div>
         <div class="end-stats">
           <div class="stat-row">

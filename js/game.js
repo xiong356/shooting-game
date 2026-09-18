@@ -39,6 +39,13 @@ const crosshair  = document.getElementById('crosshair');
 const ammoCurrentEl   = document.getElementById('ammo-current');
 const reloadHint      = document.getElementById('reload-hint');
 const reloadProgress  = document.getElementById('reload-progress');
+const healthCurrentEl = document.getElementById('health-current');
+const healthFillEl    = document.getElementById('health-fill');
+const damageFlashEl   = document.getElementById('damage-flash');
+
+// ---- 玩家血量上限 ----
+// ⚠️ 必须声明在 state 对象之前：state 在模块加载期求值，引用后声明的 const 会 TDZ 报错
+const PLAYER_MAX_HEALTH = 100;
 
 // ============================================
 // GAME STATE
@@ -57,6 +64,7 @@ const state = {
   lastTime: 0,
   redAlive: 0,
   blueAlive: 0,
+  playerHealth: PLAYER_MAX_HEALTH,
 };
 
 // ============================================
@@ -552,6 +560,9 @@ const HEADSHOT_MULTIPLIER = 2;     // 爆头（命中 name='head' 的 mesh）伤
 const HEALTH_BAR_PIXELS = { w: 160, h: 20 };   // 血条画布分辨率
 const HEALTH_BAR_SIZE = { w: 1.92, h: 0.24 };  // 血条世界尺寸（8:1，随距离自然缩放）
 const HEALTH_BAR_Y = 3.05;                     // 血条高度（宝石在 2.45）
+// 扣血缓动：主血条瞬时掉落后，白色残影延迟启动、指数追赶（见 updateHealthBarAnimations）
+const HEALTH_TRAIL_DELAY = 0.18;               // 残影延迟启动（秒）
+const HEALTH_TRAIL_SPEED = 6;                  // 追赶速率，约 0.4s 追平
 
 /** 创建头顶血条。Sprite 天生朝向相机，无需手动 billboard。 */
 function createHealthBar(borderColor) {
@@ -575,13 +586,20 @@ function createHealthBar(borderColor) {
   sprite.userData.canvas = canvas;
   sprite.userData.tex = tex;
   sprite.userData.borderColor = borderColor;
+  // 扣血缓动状态：displayRatio 是白色残影当前值，向 targetRatio 追赶（见 updateHealthBarAnimations）
+  sprite.userData.displayRatio = 1;
+  sprite.userData.targetRatio = 1;
+  sprite.userData.trailDelay = 0;
+  sprite.userData.animating = false;
 
   return sprite;
 }
 
 /**
  * 重绘血条。
- * 只在血量变化时调用，不进每帧循环——canvas 重绘 + 纹理上传比画个矩形贵得多。
+ * 静止时只在血量变化时调用；扣血缓动期间由 updateHealthBarAnimations 每帧驱动——
+ * 仅动画中的血条进循环，静止零开销（canvas 重绘 + 纹理上传比画个矩形贵得多）。
+ * 绘制顺序：底槽 → 白色残影（displayRatio，缓动追赶）→ 主血条（目标 ratio）→ 外框。
  * @param {boolean} flash 受击白闪
  */
 function drawHealthBar(sprite, ratio, flash = false) {
@@ -592,6 +610,7 @@ function drawHealthBar(sprite, ratio, flash = false) {
   const W = canvas.width;
   const H = canvas.height;
   const r = Math.max(0, Math.min(1, ratio));
+  const pad = 3;
 
   ctx.clearRect(0, 0, W, H);
 
@@ -599,8 +618,14 @@ function drawHealthBar(sprite, ratio, flash = false) {
   ctx.fillStyle = 'rgba(8, 12, 18, 0.85)';
   ctx.fillRect(0, 0, W, H);
 
+  // 白色残影：扣血后延迟缓动追赶的旧血量（只在高于主条时可见）
+  const trail = Math.max(0, Math.min(1, sprite.userData.displayRatio));
+  if (trail > r) {
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.fillRect(pad, pad, Math.round((W - pad * 2) * trail), H - pad * 2);
+  }
+
   // 血量条
-  const pad = 3;
   ctx.fillStyle = flash ? '#ffffff' : sprite.userData.borderColor;
   ctx.fillRect(pad, pad, Math.round((W - pad * 2) * r), H - pad * 2);
 
@@ -610,6 +635,30 @@ function drawHealthBar(sprite, ratio, flash = false) {
   ctx.strokeRect(1, 1, W - 2, H - 2);
 
   sprite.userData.tex.needsUpdate = true;
+}
+
+/**
+ * 扣血缓动：只处理 animating 的血条。残影延迟 HEALTH_TRAIL_DELAY 后
+ * 向 targetRatio 指数追赶，追平即停（静止零开销）。
+ */
+function updateHealthBarAnimations(dt) {
+  for (const monster of monsters) {
+    const bar = monster.userData.healthBar;
+    const ud = bar && bar.userData;
+    if (!ud || !ud.animating) continue;
+
+    if (ud.trailDelay > 0) {
+      ud.trailDelay -= dt;
+    } else {
+      ud.displayRatio += (ud.targetRatio - ud.displayRatio) * (1 - Math.exp(-HEALTH_TRAIL_SPEED * dt));
+    }
+
+    if (Math.abs(ud.displayRatio - ud.targetRatio) < 0.005) {
+      ud.displayRatio = ud.targetRatio;
+      ud.animating = false;
+    }
+    drawHealthBar(bar, ud.targetRatio, false);
+  }
 }
 
 /** 构建猩红石像 (Red Buff) — 猩红色主导 + 细节 */
@@ -664,8 +713,8 @@ function createRedBuff() {
 
   // 手臂（深红）
   const armGeo = new THREE.CylinderGeometry(0.25, 0.25, 1.2, 8);
-  const armL = new THREE.Mesh(armGeo, palette.limbs); armL.position.set(-0.85, 0.85, 0); armL.castShadow = true; group.add(armL);
-  const armR = new THREE.Mesh(armGeo, palette.limbs); armR.position.set( 0.85, 0.85, 0); armR.castShadow = true; group.add(armR);
+  const armL = new THREE.Mesh(armGeo, palette.limbs); armL.position.set(-0.85, 0.85, 0); armL.castShadow = true; armL.name = 'armL'; group.add(armL);
+  const armR = new THREE.Mesh(armGeo, palette.limbs); armR.position.set( 0.85, 0.85, 0); armR.castShadow = true; armR.name = 'armR'; group.add(armR);
 
   // 拳头（亮红 + 臂部关节环）
   const fistGeo = new THREE.SphereGeometry(0.28, 8, 6);
@@ -771,8 +820,8 @@ function createBlueBuff() {
 
   // 手臂
   const armGeo = new THREE.CylinderGeometry(0.25, 0.25, 1.2, 8);
-  const armL = new THREE.Mesh(armGeo, palette.limbs); armL.position.set(-0.85, 0.85, 0); armL.castShadow = true; group.add(armL);
-  const armR = new THREE.Mesh(armGeo, palette.limbs); armR.position.set( 0.85, 0.85, 0); armR.castShadow = true; group.add(armR);
+  const armL = new THREE.Mesh(armGeo, palette.limbs); armL.position.set(-0.85, 0.85, 0); armL.castShadow = true; armL.name = 'armL'; group.add(armL);
+  const armR = new THREE.Mesh(armGeo, palette.limbs); armR.position.set( 0.85, 0.85, 0); armR.castShadow = true; armR.name = 'armR'; group.add(armR);
 
   // 拳头 + 腕甲
   const fistGeo = new THREE.SphereGeometry(0.28, 8, 6);
@@ -849,9 +898,12 @@ function spawnMonsters(count) {
       ...monster.userData,
       id: i,
       alert: false,
-      alertZone: 12,
+      alertZone: 16,
       chaseSpeed: 2.5,
-      stopDist: 1.8,
+      // 红怪贴脸近战（1.8m）；蓝怪停在施法射程处只丢弹不靠近，体现远程定位。
+      // 蓝怪用 BLUE_CAST_RANGE：shouldChase 在「距离 ≤ stopDist 且视线通畅」时返回
+      // false，进射程即停下开火；视线被挡时仍会绕行找角度（不会隔墙干瞪眼）。
+      stopDist: isRed ? 1.8 : BLUE_CAST_RANGE,
       originalPos: new THREE.Vector3(x, 0, z),
       originalRot: monster.rotation.y,
       health: monster.userData.maxHealth,
@@ -859,19 +911,33 @@ function spawnMonsters(count) {
       // 正面被挡住时选定的绕行侧（-1 左 / +1 右 / 0 未选）。
       // 必须保持到脱离障碍为止，否则每帧重新随机会让野怪左右抖动、原地打转。
       avoidSide: 0,
+      // ---- 攻击状态机（红近战 / 蓝远程，见 MONSTER ATTACK 区块）----
+      attackState: 'idle',   // 红怪：'idle' | 'windup' | 'strike'
+      attackT: 0,
+      attackCooldown: 0,
+      meleeHitDone: false,
+      castState: 'idle',     // 蓝怪：'idle' | 'casting' | 'recoil'
+      castT: 0,
+      castCooldown: 0,
     };
+
+    // 身体俯仰支点：lookAt 只管 monster 的 yaw，攻击动画的前倾/后仰只转
+    // bodyPivot.rotation.x —— 两者正交，不会在同一欧拉角上打架。
+    // 支点取怪物的原点（脚底高度），前倾时绕脚转而不是绕身体中心翻。
+    // 血条是 UI 不进支点，否则前倾时会跟着歪。
+    const bodyPivot = new THREE.Group();
+    bodyPivot.name = 'bodyPivot';
+    for (const child of [...monster.children]) {
+      if (child !== monster.userData.healthBar) bodyPivot.add(child);
+    }
+    monster.add(bodyPivot);
+    monster.userData.bodyPivot = bodyPivot;
+    // 攻击动画要转手臂，缓存引用省得每帧 getObjectByName
+    monster.userData.armL = monster.getObjectByName('armL');
+    monster.userData.armR = monster.getObjectByName('armR');
 
     // 血条画成满血
     drawHealthBar(monster.userData.healthBar, 1);
-
-    // AlertZone 可视化圆环
-    const ringGeo = new THREE.TorusGeometry(12, 0.15, 8, 32);
-    const ringMat = new THREE.MeshBasicMaterial({ color: '#ff4444', transparent: true, opacity: 0.25, depthWrite: false });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.05;
-    ring.name = 'alertRing';
-    monster.add(ring);
 
     scene.add(monster);
     monsters.push(monster);
@@ -898,10 +964,19 @@ function damageMonster(monster, isHeadshot) {
 
   const dmg = BASE_DAMAGE * (isHeadshot ? HEADSHOT_MULTIPLIER : 1);
   ud.health = Math.max(0, ud.health - dmg);
+  const ratio = ud.health / ud.maxHealth;
 
-  drawHealthBar(ud.healthBar, ud.health / ud.maxHealth, true);
+  // 主血条瞬时掉落（白闪帧），白色残影延迟后缓动追赶（见 updateHealthBarAnimations）
+  const bar = ud.healthBar;
+  if (bar) {
+    bar.userData.targetRatio = ratio;
+    bar.userData.trailDelay = HEALTH_TRAIL_DELAY;
+    bar.userData.animating = true;
+  }
+
+  drawHealthBar(ud.healthBar, ratio, true);
   setTimeout(() => {
-    if (!ud.dying) drawHealthBar(ud.healthBar, ud.health / ud.maxHealth, false);   // 死亡时血条已隐藏
+    if (!ud.dying) drawHealthBar(ud.healthBar, ud.healthBar.userData.targetRatio, false);   // 死亡时血条已隐藏
   }, 90);
 
   if (ud.health <= 0) { killMonster(monster); return true; }
@@ -925,7 +1000,10 @@ function killMonster(monster) {
   ud.deathStartPos = monster.position.clone();
   ud.deathEndPos = computeDeathEnd(monster.position, away);
 
-  if (ud.healthBar) ud.healthBar.visible = false;
+  if (ud.healthBar) {
+    ud.healthBar.visible = false;
+    ud.healthBar.userData.animating = false;   // 停缓动，防止尸体血条残留重绘
+  }
 
   // 材质切透明供淡出。每只野怪的材质都是独立创建的，不会波及其它个体。
   monster.traverse(c => {
@@ -1019,6 +1097,60 @@ function playKillSound() {
     osc.start(at);
     osc.stop(at + 0.18);
   });
+}
+
+/** 玩家受击闷响：低频短促，照抄 playKillSound 的 oscillator + gain 包络模式 */
+function playHurtSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(110, now);
+  osc.frequency.exponentialRampToValueAtTime(55, now + 0.18);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.22, now + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+  osc.connect(g);
+  g.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + 0.22);
+}
+
+/** 红怪挥击破空声：高频噪声感的快速下滑音 */
+function playSwingSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(900, now);
+  osc.frequency.exponentialRampToValueAtTime(220, now + 0.12);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.07, now + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+  osc.connect(g);
+  g.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + 0.15);
+}
+
+/** 蓝怪发射魔法弹：中频上扬短音 */
+function playCastSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(440, now);
+  osc.frequency.exponentialRampToValueAtTime(880, now + 0.1);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.12, now + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+  osc.connect(g);
+  g.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + 0.18);
 }
 
 // ============================================
@@ -1163,6 +1295,107 @@ function updateBulletTrails(dt) {
       bulletTrails.splice(i, 1);
     } else {
       t.material.opacity = t.userData.life / t.userData.maxLife;
+    }
+  }
+}
+
+// ============================================
+// MONSTER PROJECTILES
+// ============================================
+// 蓝怪的魔法弹：直线飞行（发射瞬间定格方向，不追踪），可走位躲避、被障碍拦截。
+// 判定抽成纯函数（projectileHitObstacle / projectileHitPlayer）供离线仿真验证。
+const monsterProjectiles = [];
+
+/** 弹丸是否落入任一障碍的 AABB（外扩 radius，含高度门控）。抽纯函数供离线测试。 */
+function projectileHitObstacle(x, y, z, radius) {
+  for (const o of solidObstacles) {
+    if (y >= o.height) continue;   // 弹道高于障碍时穿过
+    if (x > o.minX - radius && x < o.maxX + radius &&
+        z > o.minZ - radius && z < o.maxZ + radius) return true;
+  }
+  return false;
+}
+
+/** 弹丸是否命中玩家（水平距离 < 玩家半径+弹半径，且高度在玩家身高内）。抽纯函数供离线测试。 */
+function projectileHitPlayer(px, py, pz, playerX, playerZ, radius) {
+  const dx = px - playerX;
+  const dz = pz - playerZ;
+  return dx * dx + dz * dz < (PLAYER_RADIUS + radius) * (PLAYER_RADIUS + radius) &&
+         py >= 0 && py <= PLAYER_HEIGHT;
+}
+
+/** 从宝石位置朝玩家胸口发射一枚魔法弹（方向发射瞬间定格，直线飞行） */
+function spawnMonsterProjectile(monster) {
+  const ud = monster.userData;
+  const from = ud.gem.getWorldPosition(new THREE.Vector3());
+  const to = new THREE.Vector3(playerPosition.x, playerPosition.y + 1.2, playerPosition.z);
+  const dir = new THREE.Vector3().subVectors(to, from);
+  if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+  dir.normalize();
+
+  const geo = new THREE.SphereGeometry(BLUE_PROJ_RADIUS, 10, 8);
+  const mat = new THREE.MeshStandardMaterial({
+    color: '#3399ff',
+    emissive: '#0066ff',
+    emissiveIntensity: 2.5,
+    roughness: 0.2,
+  });
+  const proj = new THREE.Mesh(geo, mat);
+  proj.position.copy(from);
+  proj.userData = {
+    velocity: dir.multiplyScalar(BLUE_PROJ_SPEED),
+    life: BLUE_PROJ_LIFE,
+  };
+
+  scene.add(proj);
+  monsterProjectiles.push(proj);
+  playCastSound();
+}
+
+function disposeProjectile(p) {
+  scene.remove(p);
+  p.geometry.dispose();
+  p.material.dispose();
+}
+
+function updateMonsterProjectiles(dt) {
+  for (let i = monsterProjectiles.length - 1; i >= 0; i--) {
+    const p = monsterProjectiles[i];
+    const ud = p.userData;
+
+    ud.life -= dt;
+    if (ud.life <= 0) {
+      disposeProjectile(p);
+      monsterProjectiles.splice(i, 1);
+      continue;
+    }
+
+    p.position.x += ud.velocity.x * dt;
+    p.position.y += ud.velocity.y * dt;
+    p.position.z += ud.velocity.z * dt;
+
+    // 撞障碍 → 爆粒子消失
+    if (projectileHitObstacle(p.position.x, p.position.y, p.position.z, BLUE_PROJ_RADIUS)) {
+      spawnParticles(p.position, '#3399ff', 10);
+      disposeProjectile(p);
+      monsterProjectiles.splice(i, 1);
+      continue;
+    }
+
+    // 命中玩家 → 扣血 + 爆粒子消失
+    if (projectileHitPlayer(p.position.x, p.position.y, p.position.z, playerPosition.x, playerPosition.z, BLUE_PROJ_RADIUS)) {
+      damagePlayer(BLUE_CAST_DAMAGE);
+      spawnParticles(p.position, '#3399ff', 10);
+      disposeProjectile(p);
+      monsterProjectiles.splice(i, 1);
+      continue;
+    }
+
+    // 飞出场地边界 → 移除防泄漏
+    if (Math.abs(p.position.x) > DEATH_BOUNDS.x ||
+        p.position.z < DEATH_BOUNDS.zMin || p.position.z > DEATH_BOUNDS.zMax) {
+      disposeProjectile(p);
+      monsterProjectiles.splice(i, 1);
     }
   }
 }
@@ -2490,9 +2723,18 @@ function updateCamera() {
   const sway = getSwayOffset(swayPhase, locomotion.swayAmp, SWAY_AMP_LATERAL, locomotion.moveBlend);
   const breatheY = BREATH_AMP * (1 - locomotion.moveBlend) * Math.sin(breathPhase);
 
+  // 受击抖动：只叠加 position 不改 rotation（与 sway 同款约定，准星与弹道仍一致）。
+  // shakeT 由 update(dt) 递减，这里只消费。
+  let shakeX = 0, shakeY = 0;
+  if (shakeT > 0) {
+    const k = shakeT / HURT_SHAKE_TIME;
+    shakeX = (Math.random() - 0.5) * 2 * HURT_SHAKE_AMP * k;
+    shakeY = (Math.random() - 0.5) * 2 * HURT_SHAKE_AMP * k;
+  }
+
   camera.position.set(
-    playerPosition.x + sway.x,
-    playerPosition.y + eyeHeight + breatheY + sway.y,
+    playerPosition.x + sway.x + shakeX,
+    playerPosition.y + eyeHeight + breatheY + sway.y + shakeY,
     playerPosition.z
   );
 
@@ -2735,7 +2977,7 @@ function shoot() {
   const monsterMeshes = [];
   monsters.forEach(m => {
     if (m.userData.dying) return;
-    m.traverse(c => { if (c.isMesh && c.name !== 'alertRing') monsterMeshes.push(c); });
+    m.traverse(c => { if (c.isMesh) monsterMeshes.push(c); });
   });
 
   const intersects = raycaster.intersectObjects(monsterMeshes, false);
@@ -2955,27 +3197,194 @@ function updateMonsters(dt) {
     const wasAlert = ud.alert;
     ud.alert = dist <= ud.alertZone;
 
-    // Toggle alert ring visibility
-    const ring = monster.getObjectByName('alertRing');
-    if (ring) ring.visible = true; // 调试期始终显示
-
     if (ud.alert) {
       // 面朝玩家
       monster.lookAt(playerPosition.x, monster.position.y, playerPosition.z);
 
+      // 攻击状态机（红近战 / 蓝远程）。攻击都要求视线通畅（isPathClear），
+      // 隔着掩体时野怪只会继续绕行，不会攻击
+      if (ud.type === 'red') updateMeleeAttack(monster, ud, dist, dt);
+      else updateRangedAttack(monster, ud, dist, dt);
+
       // 追逐（匀速，保持距离）。碰撞与正面绕行都在 stepMonsterChase 内部。
-      // 门控用 shouldChase（距离 + 视线），不是纯距离 —— 理由见该函数的注释
-      if (shouldChase(dist, ud.stopDist, monster.position, playerPosition.x, playerPosition.z)) {
+      // 门控用 shouldChase（距离 + 视线），不是纯距离 —— 理由见该函数的注释。
+      // 红怪挥击期间（windup/strike）锁移动，前冲由状态机自己驱动
+      const meleeLocked = ud.type === 'red' && ud.attackState !== 'idle';
+      if (!meleeLocked && shouldChase(dist, ud.stopDist, monster.position, playerPosition.x, playerPosition.z)) {
         stepMonsterChase(monster.position, ud, playerPosition.x, playerPosition.z, ud.chaseSpeed, dt);
       }
     } else if (wasAlert) {
-      // 刚刚脱离警惕——停在当前位置
+      // 刚刚脱离警惕——停在当前位置，并复位攻击姿态（不能带着半截挥击/投掷动作站着）
+      if (ud.type === 'red') {
+        ud.attackState = 'idle';
+        ud.attackT = 0;
+        resetMeleePose(ud);
+      } else {
+        ud.castState = 'idle';
+        ud.castT = 0;
+        resetCastPose(ud);
+      }
     }
 
     // 宝石旋转动画
     if (ud.gem) {
       ud.gem.rotation.y += dt * 2;
     }
+  }
+
+  // 血条扣血缓动（只重绘 animating 的血条，静止零开销）
+  updateHealthBarAnimations(dt);
+}
+
+// ============================================
+// MONSTER ATTACK
+// ============================================
+// --- 红怪近战（高难度）---
+const RED_MELEE_DAMAGE = 25;
+const RED_MELEE_COOLDOWN = 1.0;    // 两次挥击间隔（秒）
+const RED_MELEE_RANGE = 2.6;       // 进入攻击的距离门限（> stopDist 1.8，含前冲余量）
+const RED_MELEE_HIT_RANGE = 3.0;   // 挥击瞬间的判伤距离（含前冲位移）
+const RED_MELEE_WINDUP = 0.35;     // 抬臂前摇（给玩家反应窗口）
+const RED_MELEE_STRIKE = 0.15;     // 挥击 + 前冲时长
+const RED_MELEE_LUNGE_SPEED = 6;   // 前冲速度（0.15s × 6 = 0.9m）
+const RED_MELEE_ARM_LIFT = -1.2;   // 前摇结束时右臂 rotation.x（rad）
+const RED_MELEE_LEAN = 0.1;        // 前摇时身体前倾（rad）
+// --- 蓝怪远程（低伤害）---
+const BLUE_CAST_DAMAGE = 10;
+const BLUE_CAST_COOLDOWN = 1.5;
+const BLUE_CAST_RANGE = 8;         // 追击途中开火的最大距离
+const BLUE_CAST_TIME = 0.4;        // 吟唱（后仰蓄力 + 宝石亮起预警）
+const BLUE_CAST_RECOIL = 0.15;     // 发射后的前倾投掷姿态时长，随后复位
+const BLUE_CAST_LEAN_BACK = -0.15; // 吟唱后仰（rad）
+const BLUE_CAST_ARM_LIFT = -1.4;   // 吟唱双臂抬起（rad）
+const BLUE_CAST_LEAN_FWD = 0.12;   // recoil 前倾（rad）
+const BLUE_CAST_ARM_PUSH = 0.6;    // recoil 双臂前推（rad）
+const BLUE_GEM_GLOW = 5;           // 吟唱时宝石 emissiveIntensity（平时 2.5）
+// --- 弹丸与玩家受击 ---
+const BLUE_PROJ_SPEED = 9;         // 8m 飞行 ≈0.9s，走速 4.2 可躲
+const BLUE_PROJ_RADIUS = 0.35;     // 弹丸命中半径
+const BLUE_PROJ_LIFE = 4;          // 寿命上限防泄漏
+const PLAYER_HEIGHT = 1.8;         // 玩家身高（弹丸高度判定用）
+const HURT_SHAKE_AMP = 0.06;       // 相机抖动幅度（米）
+const HURT_SHAKE_TIME = 0.25;      // 抖动衰减时长
+const HURT_FLASH_PULSE = 0.6;      // 受击红闪脉冲不透明度
+const HURT_FLASH_LOW_BASE = 0.35;  // 低血（<40%）红闪持续底值上限
+
+/** 复位红怪近战姿态（身体与右臂归零） */
+function resetMeleePose(ud) {
+  if (ud.bodyPivot) ud.bodyPivot.rotation.x = 0;
+  if (ud.armR) ud.armR.rotation.x = 0;
+}
+
+/**
+ * 红怪近战状态机：idle → windup（抬臂预警）→ strike（前冲 + 判伤）→ idle。
+ * windup/strike 期间锁移动（由 updateMonsters 的 meleeLocked 保证），
+ * 前冲仍跑碰撞解算（含肩圆），不会穿墙追人。
+ */
+function updateMeleeAttack(monster, ud, dist, dt) {
+  ud.attackCooldown -= dt;
+  ud.attackT += dt;
+
+  if (ud.attackState === 'idle') {
+    if (dist <= RED_MELEE_RANGE && ud.attackCooldown <= 0 &&
+        isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+      ud.attackState = 'windup';
+      ud.attackT = 0;
+    }
+    return;
+  }
+
+  if (ud.attackState === 'windup') {
+    // 抬臂 + 前倾：线性插值，给玩家反应窗口
+    const t = Math.min(ud.attackT / RED_MELEE_WINDUP, 1);
+    if (ud.armR) ud.armR.rotation.x = RED_MELEE_ARM_LIFT * t;
+    if (ud.bodyPivot) ud.bodyPivot.rotation.x = RED_MELEE_LEAN * t;
+    if (ud.attackT >= RED_MELEE_WINDUP) {
+      ud.attackState = 'strike';
+      ud.attackT = 0;
+      ud.meleeHitDone = false;
+      playSwingSound();
+    }
+    return;
+  }
+
+  // strike：朝玩家前冲，第一帧判伤（之后前冲不再重复判）
+  const dirX = playerPosition.x - monster.position.x;
+  const dirZ = playerPosition.z - monster.position.z;
+  const len = Math.hypot(dirX, dirZ);
+  if (len > 1e-6) {
+    const nx = dirX / len, nz = dirZ / len;
+    monster.position.x += nx * RED_MELEE_LUNGE_SPEED * dt;
+    monster.position.z += nz * RED_MELEE_LUNGE_SPEED * dt;
+    resolveObstacleCollisions(monster.position, MONSTER_RADIUS);
+    resolveShoulderCollisions(monster.position, nx, nz);
+  }
+
+  if (!ud.meleeHitDone) {
+    ud.meleeHitDone = true;
+    if (dist <= RED_MELEE_HIT_RANGE &&
+        isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+      damagePlayer(RED_MELEE_DAMAGE);
+    }
+  }
+
+  if (ud.attackT >= RED_MELEE_STRIKE) {
+    ud.attackState = 'idle';
+    ud.attackT = 0;
+    ud.attackCooldown = RED_MELEE_COOLDOWN;
+    resetMeleePose(ud);
+  }
+}
+
+/** 复位蓝怪施法姿态（身体、双臂、宝石发光） */
+function resetCastPose(ud) {
+  if (ud.bodyPivot) ud.bodyPivot.rotation.x = 0;
+  if (ud.armL) ud.armL.rotation.x = 0;
+  if (ud.armR) ud.armR.rotation.x = 0;
+  if (ud.gem) ud.gem.material.emissiveIntensity = 2.5;
+}
+
+/**
+ * 蓝怪远程状态机：idle → casting（后仰蓄力 + 双臂抬起 + 宝石渐亮预警）
+ * → recoil（前倾投掷）→ idle。三个状态下移动都不中断（边追边丢）。
+ */
+function updateRangedAttack(monster, ud, dist, dt) {
+  ud.castCooldown -= dt;
+  ud.castT += dt;
+
+  if (ud.castState === 'idle') {
+    if (dist <= BLUE_CAST_RANGE && ud.castCooldown <= 0 &&
+        isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+      ud.castState = 'casting';
+      ud.castT = 0;
+    }
+    return;
+  }
+
+  if (ud.castState === 'casting') {
+    const t = Math.min(ud.castT / BLUE_CAST_TIME, 1);
+    if (ud.bodyPivot) ud.bodyPivot.rotation.x = BLUE_CAST_LEAN_BACK * t;
+    if (ud.armL) ud.armL.rotation.x = BLUE_CAST_ARM_LIFT * t;
+    if (ud.armR) ud.armR.rotation.x = BLUE_CAST_ARM_LIFT * t;
+    if (ud.gem) ud.gem.material.emissiveIntensity = 2.5 + (BLUE_GEM_GLOW - 2.5) * t;
+    if (ud.castT >= BLUE_CAST_TIME) {
+      spawnMonsterProjectile(monster);
+      ud.castState = 'recoil';
+      ud.castT = 0;
+      // 前倾投掷姿态瞬间切换（不插值，突出释放感）
+      if (ud.bodyPivot) ud.bodyPivot.rotation.x = BLUE_CAST_LEAN_FWD;
+      if (ud.armL) ud.armL.rotation.x = BLUE_CAST_ARM_PUSH;
+      if (ud.armR) ud.armR.rotation.x = BLUE_CAST_ARM_PUSH;
+    }
+    return;
+  }
+
+  // recoil：保持前倾姿态，时长到后复位
+  if (ud.castT >= BLUE_CAST_RECOIL) {
+    ud.castState = 'idle';
+    ud.castT = 0;
+    ud.castCooldown = BLUE_CAST_COOLDOWN;
+    resetCastPose(ud);
   }
 }
 
@@ -3025,6 +3434,57 @@ function showHitMarker(isHeadshot) {
 }
 
 // ============================================
+// PLAYER HEALTH
+// ============================================
+// 玩家血量与受击反馈。无无敌帧、无回血（高难度定位）；血量归零 → 本局结束（endGame('death')）。
+let shakeT = 0;          // 受击相机抖动剩余时长（updateCamera 消费，update 递减）
+let hurtFlashOpacity = 0; // 红闪当前不透明度（脉冲 + 低血底值，update 里衰减）
+
+function updateHealthUI() {
+  if (healthCurrentEl) healthCurrentEl.textContent = Math.ceil(state.playerHealth);
+  if (healthFillEl) healthFillEl.style.width = (state.playerHealth / PLAYER_MAX_HEALTH * 100) + '%';
+  const low = state.playerHealth <= PLAYER_MAX_HEALTH * 0.3;
+  if (healthCurrentEl) healthCurrentEl.classList.toggle('low', low);
+}
+
+/** 受击红闪：一次脉冲 0.6；低血（<40%）时另叠加持续底值，衰减在 update(dt) 推进 */
+function flashDamage() {
+  hurtFlashOpacity = Math.max(hurtFlashOpacity, HURT_FLASH_PULSE);
+}
+
+/** 红闪每帧推进：脉冲衰减回低血底值（无低血则衰减到 0） */
+function updateDamageFlash(dt) {
+  if (!damageFlashEl) return;
+  const hpRatio = state.playerHealth / PLAYER_MAX_HEALTH;
+  const base = hpRatio < 0.4 ? (1 - hpRatio) * HURT_FLASH_LOW_BASE : 0;
+  if (hurtFlashOpacity > base) {
+    hurtFlashOpacity = Math.max(base, hurtFlashOpacity - dt * 2.4);
+  }
+  damageFlashEl.style.opacity = hurtFlashOpacity;
+  damageFlashEl.classList.toggle('hidden', hurtFlashOpacity <= 0.001);
+}
+
+function startCameraShake() {
+  shakeT = HURT_SHAKE_TIME;
+}
+
+/**
+ * 对玩家造成伤害（红怪近战 / 蓝怪魔法弹共用入口）。
+ * 触发受击反馈三件套：红闪 + 闷响 + 相机抖动；血量归零 → 本局结束。
+ */
+function damagePlayer(amount) {
+  if (state.status !== 'playing') return;
+  state.playerHealth = Math.max(0, state.playerHealth - amount);
+  updateHealthUI();
+  flashDamage();
+  playHurtSound();
+  startCameraShake();
+  if (state.playerHealth <= 0) {
+    endGame('death');
+  }
+}
+
+// ============================================
 // GAME STATE MANAGEMENT
 // ============================================
 function startGame() {
@@ -3038,11 +3498,19 @@ function startGame() {
   state.ammoRefilled = false;
   state.redAlive = 0;
   state.blueAlive = 0;
+  state.playerHealth = PLAYER_MAX_HEALTH;
   shootTimer = 0;
   canShoot = true;
   recoilPitch = 0;
   recoilYaw = 0;
   weaponKick = 0;
+  // 受击反馈复位：否则重开局会带着上一局的抖动/红闪残渣
+  shakeT = 0;
+  hurtFlashOpacity = 0;
+  if (damageFlashEl) {
+    damageFlashEl.style.opacity = 0;
+    damageFlashEl.classList.add('hidden');
+  }
 
   playerPosition.set(0, 0, 2);
   cameraAngleH = 0;
@@ -3065,11 +3533,15 @@ function startGame() {
 
   // Clear old monsters and spawn new ones
   monsters.forEach(m => { scene.remove(m); });
+  // 清掉上一局残留的魔法弹（否则重开局瞬间会被飞了一半的弹打中）
+  monsterProjectiles.forEach(p => disposeProjectile(p));
+  monsterProjectiles.length = 0;
   spawnMonsters(6 + Math.floor(Math.random() * 3)); // 6~8
 
   // Update UI
   updateUI();
   updateAmmoUI();
+  updateHealthUI();
 
   // Show HUD, hide start screen
   startScreen.classList.add('hidden');
@@ -3114,7 +3586,7 @@ function resumeGame() {
   requestPointerLock();
 }
 
-function endGame() {
+function endGame(reason = 'time') {
   state.status = 'ended';
   state.isPointerLocked = false;
   document.exitPointerLock();
@@ -3129,13 +3601,17 @@ function endGame() {
 
   playGameEndSound();
 
-  document.getElementById('end-score').textContent = '训练完成';
+  // 死亡结算与正常结束区分：标题、评级不同
+  const dead = reason === 'death';
+  const titleEl = document.getElementById('end-title');
+  if (titleEl) titleEl.textContent = dead ? '你已阵亡' : '训练结束';
+  document.getElementById('end-score').textContent = dead ? '阵亡' : '训练完成';
   document.getElementById('end-kills').textContent    = '--';
   document.getElementById('end-headshots').textContent = '--';
   document.getElementById('end-accuracy').textContent  = '--';
   document.getElementById('end-combo').textContent     = '--';
 
-  document.getElementById('grade-letter').textContent = 'PvE';
+  document.getElementById('grade-letter').textContent = dead ? 'F' : 'PvE';
 }
 
 function restartGame() {
@@ -3182,6 +3658,10 @@ function update(dt) {
     updateMonsters(cappedDT);
     updateParticles(cappedDT);
     updateBulletTrails(cappedDT);
+    updateMonsterProjectiles(cappedDT);
+    // 受击反馈衰减：抖动时长递减（updateCamera 消费），红闪向低血底值回落
+    if (shakeT > 0) shakeT = Math.max(0, shakeT - cappedDT);
+    updateDamageFlash(cappedDT);
     updateUI();
   }
 
