@@ -1303,30 +1303,58 @@ function updateParticles(dt) {
 // ============================================
 // BULLET TRAIL
 // ============================================
+// 曳光弹视觉：亮头沿弹道从枪口飞向落点，身后拖一条蓝白细长尾迹，到落点即停后淡出。
+// 真实子弹 800 m/s 在 60fps 下单帧就飞完，肉眼不可读，故用「视觉速度」100 m/s
+// （40m 脱靶 ≈0.4s 飞完，10m 命中 ≈0.1s）。命中粒子/伤害仍即时结算，光束纯装饰
+// ——CS:GO 同款取舍：游戏反馈不能等弹道动画。
+const TRACER_SPEED = 100;      // 视觉飞行速度 (m/s)
+const TRACER_LENGTH = 7;       // 尾迹长度 (m)
+const TRACER_RADIUS = 0.018;   // 光束半径 (m)，8 段圆管避免低段数的「三角棱面」观感
+const TRACER_FADE = 0.22;      // 到达落点后淡出时长 (s)
+
 const bulletTrails = [];
 
 function spawnBulletTrail(from, to) {
-  const mid = new THREE.Vector3().addVectors(from, to).multiplyScalar(0.5);
   const direction = new THREE.Vector3().subVectors(to, from);
-  const length = direction.length();
+  const totalLen = direction.length();
+  if (totalLen < 0.1) return;
+  direction.normalize();
 
-  const geo = new THREE.CylinderGeometry(0.01, 0.01, length, 4);
+  // 圆柱轴心在头部（原点），尾部沿局部 -Y 延伸；顶点色 RGBA 沿高度做白→蓝→透明渐变
+  const len = Math.min(TRACER_LENGTH, totalLen);
+  const geo = new THREE.CylinderGeometry(TRACER_RADIUS, TRACER_RADIUS * 0.5, len, 8, 4, true);
+  geo.translate(0, -len / 2, 0);
+  const posAttr = geo.attributes.position;
+  const colors = new Float32Array(posAttr.count * 4);
+  for (let i = 0; i < posAttr.count; i++) {
+    const t = -posAttr.getY(i) / len;   // 0=头 1=尾
+    colors[i * 4]     = 1 - t * 0.6;    // r：白 → 蓝
+    colors[i * 4 + 1] = 1 - t * 0.15;   // g：轻微衰减
+    colors[i * 4 + 2] = 1;              // b：恒为蓝白基调
+    colors[i * 4 + 3] = (1 - t) * (1 - t);   // alpha 二次衰减，尾端完全透明
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 4));
+
   const mat = new THREE.MeshBasicMaterial({
-    color: '#ffaa44',
+    vertexColors: true,
     transparent: true,
-    opacity: 0.8,
+    blending: THREE.AdditiveBlending,   // 零构建无 bloom，additive 叠加模拟自发光
+    depthWrite: false,
+    side: THREE.DoubleSide,             // openEnded 圆管从内侧也可见，避免穿近处时消失
   });
-  const trail = new THREE.Mesh(geo, mat);
 
-  trail.position.copy(mid);
-  trail.quaternion.setFromUnitVectors(
-    new THREE.Vector3(0, 1, 0),
-    direction.normalize(),
-  );
+  const trail = new THREE.Mesh(geo, mat);
+  trail.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+  trail.position.copy(from);
+  trail.scale.y = 0.001;   // 首帧尾迹还没「拖出来」，下一帧起按头部行程拉伸
 
   trail.userData = {
-    life: 0.25,
-    maxLife: 0.25,
+    from: from.clone(),
+    dir: direction,
+    totalLen: totalLen,
+    tailLen: len,
+    headDist: 0,
+    fadeT: -1,   // -1 = 飞行中；>=0 = 已到落点、淡出计时
   };
 
   scene.add(trail);
@@ -1336,17 +1364,24 @@ function spawnBulletTrail(from, to) {
 function updateBulletTrails(dt) {
   for (let i = bulletTrails.length - 1; i >= 0; i--) {
     const t = bulletTrails[i];
-    t.userData.life -= dt;
-    if (t.userData.life <= 0) {
-      scene.remove(t);
-      t.geometry.dispose();
-      t.material.dispose();
-      bulletTrails.splice(i, 1);
+    const ud = t.userData;
+    if (ud.fadeT < 0) {
+      // 飞行阶段：头部前移，尾迹长度 = min(头部行程, 尾迹长, 总行程)
+      ud.headDist = Math.min(ud.headDist + TRACER_SPEED * dt, ud.totalLen);
+      t.position.copy(ud.from).addScaledVector(ud.dir, ud.headDist);
+      t.scale.y = Math.max(0.001, Math.min(1, ud.headDist / ud.tailLen));
+      if (ud.headDist >= ud.totalLen) ud.fadeT = 0;   // 到落点即停
     } else {
-      // 前 40% 时长保持高亮、后段线性淡出：纯线性衰减下拖尾几乎瞬间变透明，
-      // 玩家来不及看清弹道偏移的落点方向
-      const k = t.userData.life / t.userData.maxLife;
-      t.material.opacity = 0.8 * Math.min(1, k * 1.6);
+      ud.fadeT += dt;
+      const k = 1 - ud.fadeT / TRACER_FADE;
+      if (k <= 0) {
+        scene.remove(t);
+        t.geometry.dispose();
+        t.material.dispose();
+        bulletTrails.splice(i, 1);
+      } else {
+        t.material.opacity = k;
+      }
     }
   }
 }
@@ -3704,6 +3739,13 @@ function startGame() {
   // 清掉上一局残留的魔法弹（否则重开局瞬间会被飞了一半的弹打中）
   monsterProjectiles.forEach(p => disposeProjectile(p));
   monsterProjectiles.length = 0;
+  // 同理清空曳光弹：飞行中的光束可存续 ~0.6s，重开瞬间会挂着上一局的弹道
+  bulletTrails.forEach(t => {
+    scene.remove(t);
+    t.geometry.dispose();
+    t.material.dispose();
+  });
+  bulletTrails.length = 0;
   spawnMonsters(6 + Math.floor(Math.random() * 3)); // 6~8
 
   // Update UI
