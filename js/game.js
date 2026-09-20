@@ -1325,8 +1325,8 @@ function spawnBulletTrail(from, to) {
   );
 
   trail.userData = {
-    life: 0.1,
-    maxLife: 0.1,
+    life: 0.25,
+    maxLife: 0.25,
   };
 
   scene.add(trail);
@@ -1343,7 +1343,10 @@ function updateBulletTrails(dt) {
       t.material.dispose();
       bulletTrails.splice(i, 1);
     } else {
-      t.material.opacity = t.userData.life / t.userData.maxLife;
+      // 前 40% 时长保持高亮、后段线性淡出：纯线性衰减下拖尾几乎瞬间变透明，
+      // 玩家来不及看清弹道偏移的落点方向
+      const k = t.userData.life / t.userData.maxLife;
+      t.material.opacity = 0.8 * Math.min(1, k * 1.6);
     }
   }
 }
