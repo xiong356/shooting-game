@@ -4150,4 +4150,3 @@ window.__SNAPSHOT__.obstacles     = () => solidObstacles.map(o => ({...o}));
 
 // Boot
 init();
-  x
