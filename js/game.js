@@ -1547,7 +1547,7 @@ const WEAPON_SFX = {
     magOut:      'ak47/magOut',
     magIn:       'ak47/magIn',
     bolt:        'ak47/bolt',
-    shotVolume:  0.85,
+    shotVolume:  0.5,
     mechVolume:  0.55,
     pitchJitter: [0.96, 1.04],
   },
@@ -3825,6 +3825,8 @@ function endGame(reason = 'time') {
   document.getElementById('end-accuracy').textContent  = pct(state.shotsHit, state.shotsFired); // 命中率 = 命中 / 开枪
   document.getElementById('end-combo').textContent     = state.maxCombo;
 
+  recordCalibSample(reason);   // M0 标定：每局真实结束后累积一条原始计数样本（函数声明已提升，此处可调）
+
   document.getElementById('grade-letter').textContent = dead ? 'F' : (victory ? 'S' : 'PvE');
 }
 
@@ -4101,6 +4103,33 @@ function init() {
 }
 
 // ============================================
+// M0 标定采样器（纯被动记录，不参与任何游戏逻辑）
+// ============================================
+// 累积每局的原始计数（开枪/命中/爆头），供 §12「命中率/爆头率标定」跨局按原始计数
+// 池化求值——不能对各局比率取平均（样本量不同会失真）。独立于 M1 存档系统，
+// 写在专属 key；隐私模式 / JSON 异常降级为内存数组。
+const CALIB_KEY = 'wk.pve.calib.v1';
+let calibSamples = (() => {
+  try {
+    const arr = JSON.parse(localStorage.getItem(CALIB_KEY) || '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }   // 隐私模式 / 解析异常 → 内存档
+})();
+
+/** 一局真实结束（victory/death）时记录一条样本；不可达的 'time' 分支不计。 */
+function recordCalibSample(reason) {
+  if (reason !== 'victory' && reason !== 'death') return;
+  calibSamples.push({
+    ts: Date.now(),
+    result: reason,
+    shotsFired: state.shotsFired,
+    shotsHit: state.shotsHit,
+    headshots: state.headshots,
+  });
+  try { localStorage.setItem(CALIB_KEY, JSON.stringify(calibSamples)); } catch (e) { /* 内存档 */ }
+}
+
+// ============================================
 // 调试快照（仅供自动化验证读取）
 // ============================================
 /**
@@ -4126,6 +4155,9 @@ window.__SNAPSHOT__ = () => ({
   isGrounded,
   status: state.status,
   currentAmmo: state.currentAmmo,
+  // M0 标定用统计（口径与结算屏 endGame 一致）
+  accuracy: state.shotsFired > 0 ? state.shotsHit / state.shotsFired : 0,   // 命中率 = 命中 / 开枪
+  headshotRate: state.shotsHit > 0 ? state.headshots / state.shotsHit : 0,  // 爆头率 = 爆头命中 / 总命中
   footstepLog: footstepLog.slice(),
   footstepCount,   // 单调递增，不受 FOOTSTEP_LOG_MAX 截断影响
   obstacleCount: solidObstacles.length,   // 已登记的实体障碍数（碰撞体与几何体同步）
@@ -4147,6 +4179,23 @@ window.__SNAPSHOT__.pause         = pauseGame;
 window.__SNAPSHOT__.resume        = resumeGame;
 window.__SNAPSHOT__.restart       = restartGame;
 window.__SNAPSHOT__.obstacles     = () => solidObstacles.map(o => ({...o}));
+// ---- M0 标定探针接口 ----
+window.__SNAPSHOT__.calibSamples = () => calibSamples.slice();
+window.__SNAPSHOT__.calibClear = () => {
+  calibSamples.length = 0;
+  try { localStorage.removeItem(CALIB_KEY); } catch (e) { /* 无持久化可清 */ }
+};
+// 池化统计：把所有样本的原始计数相加后再求比率（正确的跨局口径）
+window.__SNAPSHOT__.calibSummary = () => {
+  let f = 0, h = 0, hs = 0;
+  for (const s of calibSamples) { f += s.shotsFired; h += s.shotsHit; hs += s.headshots; }
+  return {
+    n: calibSamples.length,                 // 样本局数；§10 要求 ≥10
+    pooledAccuracy: f > 0 ? h / f : 0,       // Σ命中 / Σ开枪
+    pooledHeadshotRate: h > 0 ? hs / h : 0,  // Σ爆头 / Σ命中
+    totalShotsFired: f, totalShotsHit: h, totalHeadshots: hs,
+  };
+};
 
 // Boot
 init();
