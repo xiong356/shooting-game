@@ -18,6 +18,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS } from './config/weapons.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
+import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary } from './save.js';
 
 // 当前武器参数（M0.5②：per-weapon 数值唯一真源在 js/config/weapons.js）。
 // 现阶段只有 AK，M4 切枪框架接入后改为随 currentWeaponId 切换。
@@ -3773,27 +3774,18 @@ function init() {
 // M0 标定采样器（纯被动记录，不参与任何游戏逻辑）
 // ============================================
 // 累积每局的原始计数（开枪/命中/爆头），供 §12「命中率/爆头率标定」跨局按原始计数
-// 池化求值——不能对各局比率取平均（样本量不同会失真）。独立于 M1 存档系统，
-// 写在专属 key；隐私模式 / JSON 异常降级为内存数组。
-const CALIB_KEY = 'wk.pve.calib.v1';
-let calibSamples = (() => {
-  try {
-    const arr = JSON.parse(localStorage.getItem(CALIB_KEY) || '[]');
-    return Array.isArray(arr) ? arr : [];
-  } catch (e) { return []; }   // 隐私模式 / 解析异常 → 内存档
-})();
-
+// 池化求值。M0.5④：存储与池化统计已迁入 js/save.js（§7 实现载体），此处只做
+// 「从 state 取数 → 推给存储层」的胶水。
 /** 一局真实结束（victory/death）时记录一条样本；不可达的 'time' 分支不计。 */
 function recordCalibSample(reason) {
   if (reason !== 'victory' && reason !== 'death') return;
-  calibSamples.push({
+  pushCalibSample({
     ts: Date.now(),
     result: reason,
     shotsFired: state.shotsFired,
     shotsHit: state.shotsHit,
     headshots: state.headshots,
   });
-  try { localStorage.setItem(CALIB_KEY, JSON.stringify(calibSamples)); } catch (e) { /* 内存档 */ }
 }
 
 // ============================================
@@ -3846,23 +3838,10 @@ window.__SNAPSHOT__.pause         = pauseGame;
 window.__SNAPSHOT__.resume        = resumeGame;
 window.__SNAPSHOT__.restart       = restartGame;
 window.__SNAPSHOT__.obstacles     = () => solidObstacles.map(o => ({...o}));
-// ---- M0 标定探针接口 ----
-window.__SNAPSHOT__.calibSamples = () => calibSamples.slice();
-window.__SNAPSHOT__.calibClear = () => {
-  calibSamples.length = 0;
-  try { localStorage.removeItem(CALIB_KEY); } catch (e) { /* 无持久化可清 */ }
-};
-// 池化统计：把所有样本的原始计数相加后再求比率（正确的跨局口径）
-window.__SNAPSHOT__.calibSummary = () => {
-  let f = 0, h = 0, hs = 0;
-  for (const s of calibSamples) { f += s.shotsFired; h += s.shotsHit; hs += s.headshots; }
-  return {
-    n: calibSamples.length,                 // 样本局数；§10 要求 ≥10
-    pooledAccuracy: f > 0 ? h / f : 0,       // Σ命中 / Σ开枪
-    pooledHeadshotRate: h > 0 ? hs / h : 0,  // Σ爆头 / Σ命中
-    totalShotsFired: f, totalShotsHit: h, totalHeadshots: hs,
-  };
-};
+// ---- M0 标定探针接口（实现在 js/save.js，探针直调真实实现，避免测试与实现漂移）----
+window.__SNAPSHOT__.calibSamples = getCalibSamples;
+window.__SNAPSHOT__.calibClear = clearCalibSamples;
+window.__SNAPSHOT__.calibSummary = calibSummary;
 
 // Boot
 init();
