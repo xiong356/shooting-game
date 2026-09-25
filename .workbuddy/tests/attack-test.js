@@ -9,7 +9,13 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '../..');
-const SRC = fs.readFileSync(path.join(ROOT, 'js/game.js'), 'utf8');
+// 多源拼接：M0.5 拆分后函数/常量可能位于 js/monsters.js 等子模块，extractFn/grabConst 需覆盖全部源文件。
+// 缺失文件跳过——拆分前仅 game.js 存在，行为与单源完全一致。
+const SRC_FILES = ['js/game.js', 'js/config/weapons.js', 'js/config/levels.js', 'js/monsters.js', 'js/save.js'];
+const SRC = SRC_FILES
+  .filter(function (f) { return fs.existsSync(path.join(ROOT, f)); })
+  .map(function (f) { return fs.readFileSync(path.join(ROOT, f), 'utf8'); })
+  .join('\n');
 
 /** 从源码里按括号配对抠出一个函数的完整定义（含函数体），不依赖正则转义 */
 function extractFn(src, name) {

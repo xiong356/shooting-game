@@ -5,7 +5,13 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '../..');   // 从脚本自身位置推导，避免硬编码路径写错
-const SRC = fs.readFileSync(path.join(ROOT, 'js/game.js'), 'utf8');
+// 多源拼接：M0.5 拆分后碰撞函数可能位于子模块，正则抽取需覆盖全部源文件。
+// 缺失文件跳过——拆分前仅 game.js 存在，行为与单源完全一致。
+const SRC_FILES = ['js/game.js', 'js/config/weapons.js', 'js/config/levels.js', 'js/monsters.js', 'js/save.js'];
+const SRC = SRC_FILES
+  .filter(function (f) { return fs.existsSync(path.join(ROOT, f)); })
+  .map(function (f) { return fs.readFileSync(path.join(ROOT, f), 'utf8'); })
+  .join('\n');
 
 const fnMatch = SRC.match(/function resolveObstacleCollisions\(pos[^)]*\) \{[\s\S]*?\n\}/);
 if (!fnMatch) { console.log('抽不到 resolveObstacleCollisions'); process.exit(1); }
