@@ -1,12 +1,12 @@
 # 王者峡谷 PvE · 关卡系统设计文档
 
-> 版本 v1.3 · 2026-09-24 · 状态：**M0 完成（Paper Review + 命中率/爆头率标定收口）**
+> 版本 v1.4 · 2026-09-25 · 状态：**M0.5 完成（§8.0 四文件拆分就位，行为不变，四门禁+esm-lint 全绿 + 浏览器冒烟通过）**
 > 读者对象：实现者。目标：30 分钟读完即可开工。
 > 数值标注规则：✅ 有 rationale（含推导）｜`[PLACEHOLDER]` 已填占位值 + 假设 + 验证路径｜⚗️ 必须 playtest 标定后才准进正式 build
 >
 > 符号优先级：同时含推导与待标定的项，以 `[PLACEHOLDER]+推导` 表示「有初值与依据、仍需 playtest 收口」，不叠加 ⚗️。✅ 仅用于已完成推导且无需 playtest 的项。
 >
-> **基线保鲜条款**：§2 现状基线对应 game.js **最新 main HEAD**（编写时为 `0c05305`）。核心数值（伤害/射速/移速/散布/血量）
+> **基线保鲜条款**：§2 现状基线对应 game.js **最新 main HEAD**（编写时为 `ad072ea`，M0.5 拆分后核心数值未变、符号位置见出处列）。核心数值（伤害/射速/移速/散布/血量）
 > 每次代码变更须同步 §2——**基线过期 = 本文档所有推导作废重查**。P4 管代码里的数字，这条管文档里的数字。
 
 ---
@@ -28,19 +28,19 @@
 
 ## 2. 现状基线（从 game.js 实测，设计的出发点）
 
-实测行数 ~4150 行。
+实测行数 ~3800 行（M0.5 拆分后；怪种工厂在 `js/monsters.js`、武器表在 `js/config/weapons.js`、存档层在 `js/save.js`、关卡骨架在 `js/config/levels.js`）。
 
 | 项 | 数值 | 出处 |
 |---|---|---|
 | 玩家 HP | 100，**无局内回血** | `PLAYER_MAX_HEALTH` |
-| AK-47 | 单发 34 / 爆头 ×2 / 射速 0.12s/发 / 弹匣 30 / 换弹 1.5s | `BASE_DAMAGE` / `shootCooldown` |
-| 红怪（近战） | 150 HP / 伤害 25 / 追速 5.0 / 停步 1.8m | `maxHealth` / `RED_MELEE_DAMAGE` |
-| 蓝怪（远程施法） | 100 HP / 伤害 10 / 射程 12m / 吟唱 0.4s / 冷却 1.5s | `BLUE_CAST_*` |
+| AK-47 | 单发 34 / 爆头 ×2 / 射速 0.12s/发 / 弹匣 30 / 换弹 1.5s | `WEAPONS.ak47.damage/fireInterval/magSize/reloadTime`（js/config/weapons.js） |
+| 红怪（近战） | 150 HP / 伤害 25 / 追速 5.0 / 停步 1.8m | `MONSTER_SPECS.red`（js/monsters.js）/ `RED_MELEE_DAMAGE` |
+| 蓝怪（远程施法） | 100 HP / 伤害 10 / 射程 12m / 吟唱 0.4s / 冷却 1.5s | `MONSTER_SPECS.blue` + `BLUE_CAST_RANGE`（js/monsters.js）/ 其余 `BLUE_CAST_*` |
 | 单局刷怪 | 6~8 只同场，杀光即胜利 | `spawnMonsters(6~8)` |
 | 计分 | 命中 10 / 爆头额外 25 / 击杀 100 | `SCORE_PER_*` |
 | 评级 | 可达态二值：胜利 S / 阵亡 F（代码另含不可达 `'PvE'` 超时分支，为死代码，关卡系统启用时移除） | `endGame()` |
 | 场地 | x∈[-26,26], z∈[-46,12]，9 个碰撞障碍 | `solidObstacles` |
-| **弹道散布（两层）** | 站桩精准；移动 inaccuracy（开火移速 2.4 → 0.15 rad，10m 散布半径 ≈1.5m）+ 空中 ×2.5 + 水平后坐固定 spray pattern（10 发循环） | `SPREAD_*` / `SPRAY_YAW_PATTERN` |
+| **弹道散布（两层）** | 站桩精准；移动 inaccuracy（开火移速 2.4 → 0.15 rad，10m 散布半径 ≈1.5m）+ 空中 ×2.5 + 水平后坐固定 spray pattern（10 发循环） | `WEAPONS.ak47.spreadPerSpeed/spreadAirMult/sprayPattern`（js/config/weapons.js） |
 | **穿墙遮挡** | 子弹射线被障碍 AABB 拦截（含高度门控），隔墙不判伤 | `rayHitObstacleDistance` |
 
 **关键推导锚点（后续所有曲线以此为基准）：**
