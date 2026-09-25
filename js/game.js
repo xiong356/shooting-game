@@ -16,6 +16,11 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { WEAPONS } from './config/weapons.js';
+
+// 当前武器参数（M0.5②：per-weapon 数值唯一真源在 js/config/weapons.js）。
+// 现阶段只有 AK，M4 切枪框架接入后改为随 currentWeaponId 切换。
+const AK = WEAPONS.ak47;
 
 // 启动标记：index.html 的「启动守卫」靠它判断脚本是否真的跑起来了。
 // 若浏览器拦截了 ES Module（典型场景：用 file:// 直接打开页面），这里不会执行，
@@ -58,11 +63,11 @@ const SCORE_PER_KILL = 100;      // 击杀奖励
 const state = {
   status: 'menu', // 'menu' | 'playing' | 'paused' | 'ended'
   timeLeft: 120,
-  maxAmmo: 30,
-  currentAmmo: 30,
+  maxAmmo: AK.magSize,
+  currentAmmo: AK.magSize,
   reloading: false,
   reloadTimer: 0,
-  reloadDuration: 1.5,
+  reloadDuration: AK.reloadTime,
   ammoRefilled: false, // 本次换弹是否已补满弹药（补弹发生在插弹匣那一刻，不是换弹结束）
   isPointerLocked: false,
   isMobile: false,
@@ -601,8 +606,7 @@ function createPlayer() {
 const monsters = [];
 
 // ---- 血量与伤害 ----
-const BASE_DAMAGE = 34;            // 单发基础伤害（红 5 枪 / 蓝 3 枪）
-const HEADSHOT_MULTIPLIER = 2;     // 爆头（命中 name='head' 的 mesh）伤害倍率
+// 单发伤害 / 爆头倍率已迁入 js/config/weapons.js（AK.damage / AK.headshotMult，§8.0）
 
 const HEALTH_BAR_PIXELS = { w: 160, h: 20 };   // 血条画布分辨率
 const HEALTH_BAR_SIZE = { w: 1.92, h: 0.24 };  // 血条世界尺寸（8:1，随距离自然缩放）
@@ -1009,7 +1013,7 @@ function damageMonster(monster, isHeadshot) {
   const ud = monster.userData;
   if (ud.dying) return false;
 
-  const dmg = BASE_DAMAGE * (isHeadshot ? HEADSHOT_MULTIPLIER : 1);
+  const dmg = AK.damage * (isHeadshot ? AK.headshotMult : 1);
   ud.health = Math.max(0, ud.health - dmg);
   const ratio = ud.health / ud.maxHealth;
 
@@ -1307,22 +1311,20 @@ function updateParticles(dt) {
 // 真实子弹 800 m/s 在 60fps 下单帧就飞完，肉眼不可读，故用「视觉速度」100 m/s
 // （40m 脱靶 ≈0.4s 飞完，10m 命中 ≈0.1s）。命中粒子/伤害仍即时结算，光束纯装饰
 // ——CS:GO 同款取舍：游戏反馈不能等弹道动画。
-const TRACER_SPEED = 100;      // 视觉飞行速度 (m/s)
-const TRACER_LENGTH = 7;       // 尾迹长度 (m)
-const TRACER_RADIUS = 0.018;   // 光束半径 (m)，8 段圆管避免低段数的「三角棱面」观感
-const TRACER_FADE = 0.22;      // 到达落点后淡出时长 (s)
-
+// 曳光参数已迁入武器表（AK.tracer，§8.0）；spawn 时快照进 userData，
+// 使 update 阶段天然按「发射瞬间所用武器」的参数走（M4 多武器共存的前提）。
 const bulletTrails = [];
 
 function spawnBulletTrail(from, to) {
+  const tr = AK.tracer;
   const direction = new THREE.Vector3().subVectors(to, from);
   const totalLen = direction.length();
   if (totalLen < 0.1) return;
   direction.normalize();
 
   // 圆柱轴心在头部（原点），尾部沿局部 -Y 延伸；顶点色 RGBA 沿高度做白→蓝→透明渐变
-  const len = Math.min(TRACER_LENGTH, totalLen);
-  const geo = new THREE.CylinderGeometry(TRACER_RADIUS, TRACER_RADIUS * 0.5, len, 8, 4, true);
+  const len = Math.min(tr.length, totalLen);
+  const geo = new THREE.CylinderGeometry(tr.radius, tr.radius * 0.5, len, 8, 4, true);
   geo.translate(0, -len / 2, 0);
   const posAttr = geo.attributes.position;
   const colors = new Float32Array(posAttr.count * 4);
@@ -1355,6 +1357,8 @@ function spawnBulletTrail(from, to) {
     tailLen: len,
     headDist: 0,
     fadeT: -1,   // -1 = 飞行中；>=0 = 已到落点、淡出计时
+    headSpeed: tr.speed,
+    fadeDur: tr.fade
   };
 
   scene.add(trail);
@@ -1367,13 +1371,13 @@ function updateBulletTrails(dt) {
     const ud = t.userData;
     if (ud.fadeT < 0) {
       // 飞行阶段：头部前移，尾迹长度 = min(头部行程, 尾迹长, 总行程)
-      ud.headDist = Math.min(ud.headDist + TRACER_SPEED * dt, ud.totalLen);
+      ud.headDist = Math.min(ud.headDist + ud.headSpeed * dt, ud.totalLen);
       t.position.copy(ud.from).addScaledVector(ud.dir, ud.headDist);
       t.scale.y = Math.max(0.001, Math.min(1, ud.headDist / ud.tailLen));
       if (ud.headDist >= ud.totalLen) ud.fadeT = 0;   // 到落点即停
     } else {
       ud.fadeT += dt;
-      const k = 1 - ud.fadeT / TRACER_FADE;
+      const k = 1 - ud.fadeT / ud.fadeDur;
       if (k <= 0) {
         scene.remove(t);
         t.geometry.dispose();
@@ -2865,7 +2869,7 @@ function updateWeaponBob(dt) {
     fpsWeapon.position.z += weaponKick * 0.09;   // 向后缩
     fpsWeapon.position.y -= weaponKick * 0.02;   // 轻微下沉
     fpsWeapon.rotation.x += weaponKick * 0.35;   // 枪口上抬
-    fpsWeapon.rotation.y += (recoilYaw / recoilMaxYaw) * weaponKick * 0.08; // 水平摆动
+    fpsWeapon.rotation.y += (recoilYaw / AK.recoilMaxYaw) * weaponKick * 0.08; // 水平摆动
   }
 
   // 换弹动作：沿用 bob / 后坐的「基准姿态 + 增量偏移」叠加方式，避免二次赋值打架
@@ -3000,7 +3004,6 @@ function createFirstPersonWeapon() {
 // SHOOTING SYSTEM
 // ============================================
 const raycaster = new THREE.Raycaster();
-const shootCooldown = 0.12;
 let shootTimer = 0;
 let canShoot = true;
 
@@ -3008,36 +3011,31 @@ let canShoot = true;
 let recoilPitch = 0;      // 相机垂直后坐（弧度，正=上抬）
 let recoilYaw = 0;        // 相机水平后坐（弧度，随机左右）
 let weaponKick = 0;       // 武器视觉后坐脉冲 0~1
-const recoilPerShot = 0.012;    // 单发垂直后坐量 (0.69°)
-const recoilYawPerShot = 0.005; // 单发最大水平偏移
-const recoilMaxPitch = 0.30;    // 垂直后坐上限 (~17°)
-const recoilMaxYaw = 0.06;      // 水平偏移上限
-const recoilRecover = 3.5;      // 后坐力衰减速率（越大回正越快）
+// 后坐强度参数已迁入武器表（AK.recoilPerShot / recoilYawPerShot / recoilMaxPitch / recoilMaxYaw，§8.0）
+const recoilRecover = 3.5;      // 后坐力衰减速率（越大回正越快）——全局手感参数，不 per-weapon
 
 // ---- Layer 1: 移动 inaccuracy（CS:GO 风格散布）----
-const SPREAD_PER_SPEED = 0.0625; // rad/(m/s)：开火移速 2.4 → 0.15 rad → 10m 处散布半径约 1.5m（轻微档）
-const SPREAD_AIR_MULT = 2.5;     // 空中（未落地）惩罚倍率：跳射大幅变飘
-const SPREAD_RECOVER = 8;        // 急停回零衰减速率，约 0.3s 收敛
-const SPREAD_CROSSHAIR_PX = 300; // 准星映射：总散布(rad) × 300 = 四线张开增量(px)
+// spreadPerSpeed / spreadAirMult 已迁入武器表（§8.0）
+const SPREAD_RECOVER = 8;        // 急停回零衰减速率，约 0.3s 收敛——运动学参数，与武器无关
+const SPREAD_CROSSHAIR_PX = 300; // 准星映射：总散布(rad) × 300 = 四线张开增量(px)——UI 映射，不 per-weapon
 const SPREAD_CROSSHAIR_MAX = 60; // 准星最大张开量(px)，极端散布下也不糊住屏幕中心
 
 /**
  * 纯函数：水平移速 + 是否滞空 → inaccuracy 角度（rad）。
- * 口径：SPREAD_PER_SPEED × 2.4 = 0.15 rad → 10m 落点散布半径 ≈ 1.5m。
+ * 口径：AK.spreadPerSpeed × 2.4 = 0.15 rad → 10m 落点散布半径 ≈ 1.5m。
  * 保持无副作用，供离线测试从源码抽取直接求值（.workbuddy/tests/spread-test.js）。
  */
 function getInaccuracyAngle(hSpeed, airborne) {
-  let a = hSpeed * SPREAD_PER_SPEED;
-  if (airborne) a *= SPREAD_AIR_MULT;
+  let a = hSpeed * AK.spreadPerSpeed;
+  if (airborne) a *= AK.spreadAirMult;
   return a;
 }
 
 let inaccuracy = 0;   // 当前散布角（rad），每帧追赶 getInaccuracyAngle 目标值
 
 // ---- Layer 2: spray pattern ----
-// 确定性水平后坐图案（单位 = recoilYawPerShot），按连发序号取模循环。
+// 确定性水平后坐图案已迁入武器表 AK.sprayPattern（单位 = recoilYawPerShot），按连发序号取模循环。
 // 首项 0 → 单发点射近似垂直上抬；后续正负交替形成可练习的固定弹道形状。
-const SPRAY_YAW_PATTERN = [0, 0.4, -0.3, 0.6, -0.5, 0.8, -0.7, 0.5, -0.9, 0.7];
 let sprayIndex = 0;   // 连发序号，后坐完全回正时复位
 
 function getGunWorldPosition() {
@@ -3064,14 +3062,14 @@ function shoot() {
   if (state.currentAmmo <= 0) return;
 
   canShoot = false;
-  shootTimer = shootCooldown;
+  shootTimer = AK.fireInterval;
   state.currentAmmo--;
   state.shotsFired++;
 
   // Apply recoil: vertical kick + pattern-driven horizontal (spray pattern, deterministic)
-  recoilPitch = Math.min(recoilPitch + recoilPerShot, recoilMaxPitch);
-  recoilYaw = Math.max(-recoilMaxYaw, Math.min(recoilMaxYaw,
-    recoilYaw + SPRAY_YAW_PATTERN[sprayIndex % SPRAY_YAW_PATTERN.length] * recoilYawPerShot));
+  recoilPitch = Math.min(recoilPitch + AK.recoilPerShot, AK.recoilMaxPitch);
+  recoilYaw = Math.max(-AK.recoilMaxYaw, Math.min(AK.recoilMaxYaw,
+    recoilYaw + AK.sprayPattern[sprayIndex % AK.sprayPattern.length] * AK.recoilYawPerShot));
   sprayIndex++;
   weaponKick = 1;
 

@@ -35,28 +35,26 @@ function extractFn(src, name) {
   return null;
 }
 
-/** 取一个顶层 const 的右值（[^;]+ 可匹配数组字面量，数组里没有分号） */
-function grabConst(src, name) {
-  const re = new RegExp('^const ' + name + ' = ([^;]+);', 'm');
-  const m = src.match(re);
-  return m ? m[1] : null;
-}
-
 const fnBody = extractFn(SRC, 'getInaccuracyAngle');
 if (!fnBody) { console.log('抽不到函数 getInaccuracyAngle'); process.exit(1); }
-for (const n of ['SPREAD_PER_SPEED', 'SPREAD_AIR_MULT', 'SPRAY_YAW_PATTERN']) {
-  if (grabConst(SRC, n) === null) { console.log('抽不到常量 ' + n); process.exit(1); }
+// M0.5②：散布/后坐常量已迁入 js/config/weapons.js 的 WEAPONS 表。
+// 表为对象字面量且内部无分号，`[^;]+` 可整表抽出（见 weapons.js 头部禁令注释）。
+const wm = SRC.match(/^export const WEAPONS = ([^;]+);/m);
+if (!wm) { console.log('抽不到 WEAPONS 表（js/config/weapons.js）'); process.exit(1); }
+const WEAPONS = new Function('return ' + wm[1])();
+for (const f of ['spreadPerSpeed', 'spreadAirMult', 'sprayPattern']) {
+  if (WEAPONS.ak47[f] === undefined) { console.log('WEAPONS.ak47 缺字段 ' + f); process.exit(1); }
 }
+const AK = WEAPONS.ak47;
 
-// 注入真实源码里的常量与纯函数，得到可求值的 API（不复制实现）
-const api = new Function(
-  'const SPREAD_PER_SPEED = ' + grabConst(SRC, 'SPREAD_PER_SPEED') + ';\n' +
-  'const SPREAD_AIR_MULT = ' + grabConst(SRC, 'SPREAD_AIR_MULT') + ';\n' +
+// 注入真实源码里的武器表与纯函数，得到可求值的 API（不复制实现）
+const api = new Function('WEAPONS',
+  'const AK = WEAPONS.ak47;\n' +
   fnBody + '\n' +
-  'return { getInaccuracyAngle, SPREAD_PER_SPEED, SPREAD_AIR_MULT };'
-)();
+  'return { getInaccuracyAngle };'
+)(WEAPONS);
 
-const pattern = new Function('return ' + grabConst(SRC, 'SPRAY_YAW_PATTERN'))();
+const pattern = AK.sprayPattern;
 
 let pass = 0, fail = 0;
 const ok = function (cond, label, extra) {
@@ -80,16 +78,16 @@ console.log('=== 组 2：空中倍率（跳射大幅惩罚）===');
   ok(f(0, true) === 0, '滞空但 0 速仍为 0（倍率乘 0 不引入底噪）');
 }
 
-console.log('=== 组 3：常量口径一致性 ===');
+console.log('=== 组 3：武器表口径一致性（WEAPONS.ak47，§8.0 迁移后唯一真源）===');
 {
-  ok(Math.abs(api.SPREAD_PER_SPEED * 2.4 - 0.15) < 1e-9,
-    'SPREAD_PER_SPEED × 2.4 ≈ 0.15 rad（10m 处散布半径 ≈ 1.5m）');
-  ok(api.SPREAD_AIR_MULT === 2.5, 'SPREAD_AIR_MULT = 2.5');
+  ok(Math.abs(AK.spreadPerSpeed * 2.4 - 0.15) < 1e-9,
+    'spreadPerSpeed × 2.4 ≈ 0.15 rad（10m 处散布半径 ≈ 1.5m）');
+  ok(AK.spreadAirMult === 2.5, 'spreadAirMult = 2.5');
 }
 
 console.log('=== 组 4：spray pattern 确定性图案表 ===');
 {
-  ok(Array.isArray(pattern), 'SPRAY_YAW_PATTERN 是数组字面量');
+  ok(Array.isArray(pattern), 'ak47.sprayPattern 是数组字面量');
   ok(pattern.length === 10, '图案长度 10', pattern.length);
   ok(pattern[0] === 0, '首项 0（单发点射近似垂直上抬）');
   ok(pattern.some(v => v > 0) && pattern.some(v => v < 0), '有正有负（左右交替漂移）');
@@ -104,8 +102,8 @@ console.log('=== 组 4：spray pattern 确定性图案表 ===');
   ok(deterministic, '同序号取值确定（无 Math.random 参与）');
 }
 
-console.log('\nSPREAD_PER_SPEED=' + api.SPREAD_PER_SPEED +
-  '  SPREAD_AIR_MULT=' + api.SPREAD_AIR_MULT +
+console.log('\nak47.spreadPerSpeed=' + AK.spreadPerSpeed +
+  '  ak47.spreadAirMult=' + AK.spreadAirMult +
   '  PATTERN=[' + pattern.join(', ') + ']');
 console.log('结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail > 0 ? 1 : 0);
