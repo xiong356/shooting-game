@@ -17,9 +17,9 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS } from './config/weapons.js';
-import { LEVELS, HP_CALIB_MUL } from './config/levels.js';
+import { LEVELS, HP_CALIB_MUL, GRADE_CONFIG } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
-import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary } from './save.js';
+import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult } from './save.js';
 
 // 当前武器参数（M0.5②：per-weapon 数值唯一真源在 js/config/weapons.js）。
 // 现阶段只有 AK，M4 切枪框架接入后改为随 currentWeaponId 切换。
@@ -3365,6 +3365,29 @@ function damagePlayer(amount) {
 // ============================================
 // GAME STATE MANAGEMENT
 // ============================================
+/**
+ * 评级（§6 S/A/B/F）。纯函数（state 无关）——level-test 从本文件抽取此实现做门禁，
+ * 签名/口径不可随意改。阈值口径：accuracy = shotsHit/shotsFired（与 M0 池化一致）；
+ * headshotRate = headshots/shotsHit（§2 标定口径，非爆头/开枪）。
+ * 命中率门 = 标定中位数 ± offset（GRADE_CONFIG），标定值 null 时回退固定阈值；
+ * S 档另要求爆头 ≥40% 且用时 ≤ parTime×1.2；B = 通关保底；F = 阵亡。
+ * @param {{died:boolean, shotsFired:number, shotsHit:number, headshots:number, elapsedSec:number}} stats
+ * @param {{parTime:number}} level 关卡行
+ * @returns {'S'|'A'|'B'|'F'}
+ */
+function gradeFor(stats, level) {
+  if (stats.died) return 'F';
+  const accPct = stats.shotsFired > 0 ? stats.shotsHit / stats.shotsFired * 100 : 0;
+  const hsPct = stats.shotsHit > 0 ? stats.headshots / stats.shotsHit * 100 : 0;
+  const calibrated = GRADE_CONFIG.calibratedAccuracyMedian !== null;
+  const sAcc = calibrated ? GRADE_CONFIG.calibratedAccuracyMedian + GRADE_CONFIG.sAccuracyOffset : GRADE_CONFIG.sAccuracyThreshold;
+  const aAcc = calibrated ? GRADE_CONFIG.calibratedAccuracyMedian + GRADE_CONFIG.aAccuracyOffset : GRADE_CONFIG.aAccuracyThreshold;
+  const timeOk = stats.elapsedSec <= level.parTime * GRADE_CONFIG.sTimeMul;
+  if (accPct >= sAcc && hsPct >= GRADE_CONFIG.sHeadshotThreshold && timeOk) return 'S';
+  if (accPct >= aAcc) return 'A';
+  return 'B';
+}
+
 function startGame(levelId) {
   initAudio();
 
@@ -3502,11 +3525,21 @@ function endGame(reason) {
 
   playGameEndSound();
 
-  // 两种结局区分：胜利 / 阵亡（标题、评级不同）。'time' 死分支已随关卡系统移除（§8.1）
+  // 两种结局区分：胜利 / 阵亡。'time' 死分支已随关卡系统移除（§8.1）
   const dead = reason === 'death';
   const victory = reason === 'victory';
+  const lv = currentLevel();
+  const elapsedSec = (performance.now() - state.levelStartTime) / 1000;
+  const grade = gradeFor({
+    died: dead,
+    shotsFired: state.shotsFired,
+    shotsHit: state.shotsHit,
+    headshots: state.headshots,
+    elapsedSec,
+  }, lv);
+
   const titleEl = document.getElementById('end-title');
-  if (titleEl) titleEl.textContent = dead ? '你已阵亡' : '胜利';
+  if (titleEl) titleEl.textContent = dead ? '你已阵亡' : ('通关 · ' + lv.name);
 
   // 结算数据：全部来自本局真实统计
   const pct = (num, den) => den > 0 ? Math.round(num / den * 100) + '%' : '0%';
@@ -3518,8 +3551,16 @@ function endGame(reason) {
 
   recordCalibSample(reason);   // M0 标定：每局真实结束后累积一条原始计数样本（函数声明已提升，此处可调）
 
-  // M1④ 换 gradeFor(stats, level)（S/A/B/F）；此处暂沿旧二值口径，victory 一律 S
-  document.getElementById('grade-letter').textContent = dead ? 'F' : 'S';
+  document.getElementById('grade-letter').textContent = grade;
+
+  // §7 写入时机：仅过关结算写盘（阵亡不写盘）。发武器（L3/L5）M4 切枪框架落地时接入。
+  const nextBtn = document.getElementById('next-btn');
+  if (victory) {
+    applyLevelResult(lv.id, { grade, score: state.score, combo: state.maxCombo });
+    if (nextBtn) nextBtn.classList.toggle('hidden', lv.id >= LEVELS.length);
+  } else if (nextBtn) {
+    nextBtn.classList.add('hidden');
+  }
 }
 
 function restartGame() {
@@ -3765,6 +3806,10 @@ function init() {
   // Button handlers
   document.getElementById('start-btn').addEventListener('click', startGame);
   document.getElementById('restart-btn').addEventListener('click', restartGame);
+  document.getElementById('next-btn').addEventListener('click', function () {
+    endScreen.classList.add('hidden');
+    startGame(state.currentLevelId + 1);   // 结算屏「下一关」直进（§7 选关 UI）
+  });
 
   // Keyboard start - allow spacebar or enter to start
   window.addEventListener('keydown', function startKeyHandler(e) {
