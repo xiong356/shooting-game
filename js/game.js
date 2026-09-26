@@ -3452,6 +3452,7 @@ function startGame(levelId) {
 
   // Show HUD, hide start screen
   startScreen.classList.add('hidden');
+  levelSelectScreen.classList.add('hidden');   // 选关屏可能开着（键盘开局路径），必须一并收起
   endScreen.classList.add('hidden');
   hud.classList.remove('hidden');
 
