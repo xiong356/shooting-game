@@ -85,7 +85,7 @@ async function main() {
       errs.forEach(x => console.log('[FAIL] LEVELS schema: ' + x));
       failed += errs.length;
     } else {
-      console.log('[OK] LEVELS schema 校验: ' + mod.LEVELS.length + ' 关通过（M1 前空表合法）');
+      console.log('[OK] LEVELS schema 校验: ' + mod.LEVELS.length + ' 关通过');
     }
   } catch (e) {
     console.log('[FAIL] 无法 import levels.js 求值: ' + e.message);
