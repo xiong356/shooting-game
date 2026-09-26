@@ -4007,6 +4007,15 @@ window.__SNAPSHOT__.loadLevel = function (n) { startGame(n); };
 window.__SNAPSHOT__.saveRead  = function () { return { save: getSave(), meta: getSaveMeta() }; };
 window.__SNAPSHOT__.unlockAll = function () { unlockAll(); return getSave(); };
 window.__SNAPSHOT__.gradeFor  = gradeFor;
+// 调试专用击杀钩子：§8.1「探针脚本逐关自动验收」需要探针能主动打完一局；
+// 只挂在本调试面下（正常游玩不可达）。逐轮头击直至清场（红 225HP 需 4 轮）。
+window.__SNAPSHOT__.cheatKillAll = function () {
+  let guard = 20;
+  while (monsters.some(m => !m.userData.dying) && guard-- > 0) {
+    for (const m of monsters.filter(x => !x.userData.dying)) damageMonster(m, true);
+  }
+  return monsters.length;
+};
 
 // Boot
 init();
