@@ -17,6 +17,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS } from './config/weapons.js';
+import { LEVELS, HP_CALIB_MUL } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
 import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary } from './save.js';
 
@@ -64,7 +65,8 @@ const SCORE_PER_KILL = 100;      // 击杀奖励
 // ============================================
 const state = {
   status: 'menu', // 'menu' | 'playing' | 'paused' | 'ended'
-  timeLeft: 120,
+  currentLevelId: 1,   // 当前关（LEVELS[id-1]）；选关/继续游戏/重开时设定（M1③）
+  levelStartTime: 0,   // 本局开始时刻（performance.now()，§6 评级时间门基准）
   maxAmmo: AK.magSize,
   currentAmmo: AK.magSize,
   reloading: false,
@@ -614,54 +616,62 @@ const monsters = [];
 // M0.5③ 已整体迁入 js/monsters.js（§8.0 怪种工厂）。本文件经 import 使用：
 // createMonster / drawHealthBar / updateHealthBarAnimations / HEALTH_TRAIL_DELAY / BLUE_CAST_RANGE。
 
-/** 在地面随机位置生成野怪（避开玩家出生点） */
-function spawnMonsters(count) {
+// 菜单背景刷怪（观感用，与关卡/评级无关）：沿用 M0 时代「6~8 只红蓝各半」的观感
+const MENU_COMPOSITION = [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }];
+
+/**
+ * 按组成表刷怪（避开玩家出生点）。composition 形如 [{type:'red',count:4}, …]；
+ * mul 透传 createMonster（{hp,spd}；dmg 倍率在攻击结算侧 damagePlayer 消费，§5.1）。
+ * 关卡倍率 × §2 全局血池校准 k（HP_CALIB_MUL）由 startGame 合成后传入。
+ */
+function spawnMonsters(composition, mul) {
   monsters.length = 0;
   const rng = (min, max) => Math.random() * (max - min) + min;
+  let id = 0;
+  for (const group of composition) {
+    for (let n = 0; n < group.count; n++) {
+      let x, z;
+      do {
+        x = rng(-24, 24);
+        z = rng(-44, 10);
+      } while (Math.sqrt(x * x + (z - 2) * (z - 2)) < 10); // 避开玩家出生点 (0,0,2)
 
-  for (let i = 0; i < count; i++) {
-    let x, z;
-    do {
-      x = rng(-24, 24);
-      z = rng(-44, 10);
-    } while (Math.sqrt(x * x + (z - 2) * (z - 2)) < 10); // 避开玩家出生点 (0,0,2)
+      // M0.5③：模型/数值基座（maxHealth/chaseSpeed/stopDist）/俯仰支点由怪种工厂构建，
+      // 默认倍率 1.0；M1③ 起关卡行经 lv.spawns × lv 倍率传入。
+      const monster = createMonster(group.type, mul);
+      monster.position.set(x, 0, z);
 
-    const isRed = i < Math.ceil(count / 2);
-    // M0.5③：模型/数值基座（maxHealth/chaseSpeed/stopDist）/俯仰支点由怪种工厂构建，
-    // 默认倍率 1.0，与旧硬编码逐位相等；关卡倍率（§5.1）M1 接 LEVELS 后传入。
-    const monster = createMonster(isRed ? 'red' : 'blue');
-    monster.position.set(x, 0, z);
+      // 随机初始朝向
+      monster.rotation.y = Math.random() * Math.PI * 2;
 
-    // 随机初始朝向
-    monster.rotation.y = Math.random() * Math.PI * 2;
+      monster.userData = {
+        ...monster.userData,
+        id: id++,
+        alert: false,
+        alertZone: 24,
+        originalPos: new THREE.Vector3(x, 0, z),
+        originalRot: monster.rotation.y,
+        health: monster.userData.maxHealth,
+        dying: false,
+        // 正面被挡住时选定的绕行侧（-1 左 / +1 右 / 0 未选）。
+        // 必须保持到脱离障碍为止，否则每帧重新随机会让野怪左右抖动、原地打转。
+        avoidSide: 0,
+        // ---- 攻击状态机（红近战 / 蓝远程，见 MONSTER ATTACK 区块）----
+        attackState: 'idle',   // 红怪：'idle' | 'windup' | 'strike'
+        attackT: 0,
+        attackCooldown: 0,
+        meleeHitDone: false,
+        castState: 'idle',     // 蓝怪：'idle' | 'casting' | 'recoil'
+        castT: 0,
+        castCooldown: 0,
+      };
 
-    monster.userData = {
-      ...monster.userData,
-      id: i,
-      alert: false,
-      alertZone: 24,
-      originalPos: new THREE.Vector3(x, 0, z),
-      originalRot: monster.rotation.y,
-      health: monster.userData.maxHealth,
-      dying: false,
-      // 正面被挡住时选定的绕行侧（-1 左 / +1 右 / 0 未选）。
-      // 必须保持到脱离障碍为止，否则每帧重新随机会让野怪左右抖动、原地打转。
-      avoidSide: 0,
-      // ---- 攻击状态机（红近战 / 蓝远程，见 MONSTER ATTACK 区块）----
-      attackState: 'idle',   // 红怪：'idle' | 'windup' | 'strike'
-      attackT: 0,
-      attackCooldown: 0,
-      meleeHitDone: false,
-      castState: 'idle',     // 蓝怪：'idle' | 'casting' | 'recoil'
-      castT: 0,
-      castCooldown: 0,
-    };
+      // 血条画成满血
+      drawHealthBar(monster.userData.healthBar, 1);
 
-    // 血条画成满血
-    drawHealthBar(monster.userData.healthBar, 1);
-
-    scene.add(monster);
-    monsters.push(monster);
+      scene.add(monster);
+      monsters.push(monster);
+    }
   }
 }
 
@@ -3329,13 +3339,20 @@ function startCameraShake() {
   shakeT = HURT_SHAKE_TIME;
 }
 
+/** 当前关配置行（§4）。currentLevelId 越界回退 L1 行（防御；L1 倍率全 1.0 无行为差异）。 */
+function currentLevel() {
+  return LEVELS[Math.min(Math.max(state.currentLevelId, 1), LEVELS.length) - 1];
+}
+
 /**
  * 对玩家造成伤害（红怪近战 / 蓝怪魔法弹共用入口）。
  * 触发受击反馈三件套：红闪 + 闷响 + 相机抖动；血量归零 → 本局结束。
+ * 伤害 × 本关 dmgMul（§5.1，作用于所有怪种）——只改「被打死耗时」，
+ * 不改「击杀耗时」（血量校准走 HP_CALIB_MUL，§2 注意条款）。
  */
 function damagePlayer(amount) {
   if (state.status !== 'playing') return;
-  state.playerHealth = Math.max(0, state.playerHealth - amount);
+  state.playerHealth = Math.max(0, state.playerHealth - amount * currentLevel().dmgMul);
   updateHealthUI();
   flashDamage();
   playHurtSound();
@@ -3348,11 +3365,15 @@ function damagePlayer(amount) {
 // ============================================
 // GAME STATE MANAGEMENT
 // ============================================
-function startGame() {
+function startGame(levelId) {
   initAudio();
 
+  // 关卡解析：无参 = 重进当前关（重开 / 键盘开局）；越界回退 L1（防御）
+  const lv = LEVELS[Math.min(Math.max(levelId || state.currentLevelId, 1), LEVELS.length) - 1];
+  state.currentLevelId = lv.id;
+
   state.status = 'playing';
-  state.timeLeft = 120;
+  state.levelStartTime = performance.now();   // §6 评级时间门基准
   state.currentAmmo = state.maxAmmo;
   state.reloading = false;
   state.reloadTimer = 0;
@@ -3414,7 +3435,8 @@ function startGame() {
     t.material.dispose();
   });
   bulletTrails.length = 0;
-  spawnMonsters(6 + Math.floor(Math.random() * 3)); // 6~8
+  // 关卡组成刷怪：§4 spawns × §5.1 关卡倍率 × §2 全局血池校准 k（仅 L1-L6 吃 k，Boss 关 M5a 另算）
+  spawnMonsters(lv.spawns, { hp: lv.hpMul * HP_CALIB_MUL, spd: lv.spdMul });
 
   // Update UI
   updateUI();
@@ -3464,7 +3486,8 @@ function resumeGame() {
   requestPointerLock();
 }
 
-function endGame(reason = 'time') {
+function endGame(reason) {
+  if (state.status === 'ended') return;   // 幂等守卫：同帧「阵亡 + 全灭」双触发只结算一次
   state.status = 'ended';
   state.isPointerLocked = false;
   document.exitPointerLock();
@@ -3479,11 +3502,11 @@ function endGame(reason = 'time') {
 
   playGameEndSound();
 
-  // 三种结局区分：胜利 / 死亡 / 其他（标题、评级不同）
+  // 两种结局区分：胜利 / 阵亡（标题、评级不同）。'time' 死分支已随关卡系统移除（§8.1）
   const dead = reason === 'death';
   const victory = reason === 'victory';
   const titleEl = document.getElementById('end-title');
-  if (titleEl) titleEl.textContent = dead ? '你已阵亡' : (victory ? '胜利' : '训练结束');
+  if (titleEl) titleEl.textContent = dead ? '你已阵亡' : '胜利';
 
   // 结算数据：全部来自本局真实统计
   const pct = (num, den) => den > 0 ? Math.round(num / den * 100) + '%' : '0%';
@@ -3495,12 +3518,13 @@ function endGame(reason = 'time') {
 
   recordCalibSample(reason);   // M0 标定：每局真实结束后累积一条原始计数样本（函数声明已提升，此处可调）
 
-  document.getElementById('grade-letter').textContent = dead ? 'F' : (victory ? 'S' : 'PvE');
+  // M1④ 换 gradeFor(stats, level)（S/A/B/F）；此处暂沿旧二值口径，victory 一律 S
+  document.getElementById('grade-letter').textContent = dead ? 'F' : 'S';
 }
 
 function restartGame() {
   endScreen.classList.add('hidden');
-  startGame();
+  startGame(state.currentLevelId);   // 重开 = 重进当前关，配置重读（§9 关卡×暂停/重开）
 }
 
 // ============================================
@@ -3735,8 +3759,8 @@ function init() {
   camera.add(weaponLight);
 
   // Create targets
-  // Spawn initial monsters (6~8, mixed red/blue)
-  spawnMonsters(7);
+  // Spawn menu backdrop monsters（观感用，组成见 MENU_COMPOSITION）
+  spawnMonsters(MENU_COMPOSITION);
 
   // Button handlers
   document.getElementById('start-btn').addEventListener('click', startGame);
