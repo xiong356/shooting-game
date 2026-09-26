@@ -106,10 +106,14 @@
           </div>
         </div>
         <button id="start-btn" class="valorant-btn">
-          <span class="btn-text">进入训练</span>
+          <span class="btn-text" id="start-btn-text">继续游戏 · L1</span>
           <span class="btn-slash"></span>
         </button>
-        <p class="start-hint">点击按钮进入训练靶场</p>
+        <button id="select-btn" class="valorant-btn ghost">
+          <span class="btn-text">选择关卡</span>
+          <span class="btn-slash"></span>
+        </button>
+        <p class="start-hint">通关解锁下一关 · 评级 S / A / B / F</p>
       </div>
     </div>
 
@@ -154,11 +158,28 @@
       </div>
     </div>
 
+    <!-- Level Select Screen（M1⑤ §7 选关 UI：卡片由 JS 按 LEVELS 渲染） -->
+    <div id="level-select-screen" class="hidden">
+      <div class="select-content">
+        <div class="select-title">选择关卡</div>
+        <div class="select-divider"></div>
+        <div id="level-grid"></div>
+        <button id="select-back-btn" class="valorant-btn ghost">
+          <span class="btn-text">返回</span>
+          <span class="btn-slash"></span>
+        </button>
+      </div>
+    </div>
+
     <!-- Paused Indicator -->
     <div id="paused-indicator" class="hidden">
       <span>已暂停</span>
       <span class="paused-hint">点击继续</span>
+      <button id="abandon-btn">放弃本关</button>
     </div>
+
+    <!-- 存档状态角标（M1⑤ §7：已重置 / 写降级提示，全局置底） -->
+    <div id="save-badge" class="hidden"></div>
 
     <!-- Mobile Controls -->
     <div id="mobile-controls" class="hidden">

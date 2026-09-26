@@ -19,7 +19,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS } from './config/weapons.js';
 import { LEVELS, HP_CALIB_MUL, GRADE_CONFIG } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
-import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult } from './save.js';
+import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged } from './save.js';
 
 // 当前武器参数（M0.5②：per-weapon 数值唯一真源在 js/config/weapons.js）。
 // 现阶段只有 AK，M4 切枪框架接入后改为随 currentWeaponId 切换。
@@ -42,6 +42,10 @@ const hitMarker  = document.getElementById('hit-marker');
 const killFeed   = document.getElementById('kill-feed');
 const mobileCtrl = document.getElementById('mobile-controls');
 const crosshair  = document.getElementById('crosshair');
+// M1⑤ 选关 UI / 暂停放弃 / 存档角标
+const levelSelectScreen = document.getElementById('level-select-screen');
+const levelGrid         = document.getElementById('level-grid');
+const saveBadge         = document.getElementById('save-badge');
 
 // UI elements that update
 const ammoCurrentEl   = document.getElementById('ammo-current');
@@ -3557,6 +3561,7 @@ function endGame(reason) {
   const nextBtn = document.getElementById('next-btn');
   if (victory) {
     applyLevelResult(lv.id, { grade, score: state.score, combo: state.maxCombo });
+    updateSaveBadge();   // 写降级可能在此刻发生，角标即时反映
     if (nextBtn) nextBtn.classList.toggle('hidden', lv.id >= LEVELS.length);
   } else if (nextBtn) {
     nextBtn.classList.add('hidden');
@@ -3566,6 +3571,98 @@ function endGame(reason) {
 function restartGame() {
   endScreen.classList.add('hidden');
   startGame(state.currentLevelId);   // 重开 = 重进当前关，配置重读（§9 关卡×暂停/重开）
+}
+
+// ============================================
+// LEVEL SELECT UI（M1⑤ §7 选关 / 继续游戏 / 放弃本关 / 存档角标）
+// ============================================
+
+/** 主按钮目标关 = 存档 unlocked 封顶表长（无进度 = L1；全通关后停在最后一关）。 */
+function continueLevelId() {
+  return Math.min(getSave().unlocked, LEVELS.length);
+}
+
+/** 开始屏主按钮文案随进度刷新（readSave / 过关 / 返回时调用）。 */
+function updateStartButton() {
+  const el = document.getElementById('start-btn-text');
+  if (el) el.textContent = '继续游戏 · L' + continueLevelId();
+}
+
+function showLevelSelect() {
+  renderLevelCards();
+  startScreen.classList.add('hidden');
+  levelSelectScreen.classList.remove('hidden');
+}
+
+function backToStart() {
+  levelSelectScreen.classList.add('hidden');
+  startScreen.classList.remove('hidden');
+  updateStartButton();
+}
+
+/** 选关卡片网格：编号/名称/最佳评级徽章/最佳分数；锁定卡置灰 + 🔒（§7）。 */
+function renderLevelCards() {
+  const save = getSave();
+  levelGrid.innerHTML = '';
+  for (const lv of LEVELS) {
+    const rec = save.levels[String(lv.id)];
+    const locked = lv.id > save.unlocked;
+    const card = document.createElement('button');
+    card.className = 'level-card' + (locked ? ' locked' : '');
+    card.innerHTML =
+      '<span class="level-num">L' + lv.id + '</span>' +
+      '<span class="level-name">' + lv.name + '</span>' +
+      (locked
+        ? '<span class="level-lock">🔒 通关上一关解锁</span>'
+        : '<span class="level-grade">' + (rec && rec.bestGrade ? rec.bestGrade : '—') + '</span>' +
+          '<span class="level-score">最佳 ' + (rec && rec.bestScore ? rec.bestScore : 0) + '</span>');
+    if (!locked) {
+      card.addEventListener('click', function () {
+        levelSelectScreen.classList.add('hidden');
+        startGame(lv.id);
+      });
+    }
+    levelGrid.appendChild(card);
+  }
+}
+
+/** 存档状态角标（§7）：已重置 / 写降级「进度不保留」。 */
+function updateSaveBadge() {
+  const meta = getSaveMeta();
+  if (meta.reset) {
+    saveBadge.textContent = '存档已重置';
+    saveBadge.classList.remove('hidden');
+  } else if (meta.memoryMode) {
+    saveBadge.textContent = '存档不可用，进度不保留';
+    saveBadge.classList.remove('hidden');
+  } else {
+    saveBadge.classList.add('hidden');
+  }
+}
+
+/** 暂停屏「放弃本关」：清场回选关，进度不写盘（§7）。 */
+function abandonLevel() {
+  if (state.status !== 'paused') return;
+  state.status = 'menu';
+  pausedInd.classList.add('hidden');
+  hud.classList.add('hidden');
+  mobileCtrl.classList.add('hidden');
+  cancelReload();
+  // 清场回到菜单观感（与 startGame 同级的清理，但不进入对局）
+  monsters.forEach(m => scene.remove(m));
+  monsterProjectiles.forEach(p => disposeProjectile(p));
+  monsterProjectiles.length = 0;
+  bulletTrails.forEach(t => {
+    scene.remove(t);
+    t.geometry.dispose();
+    t.material.dispose();
+  });
+  bulletTrails.length = 0;
+  spawnMonsters(MENU_COMPOSITION);
+  // 相机回菜单机位（updateCamera 在 menu 态不跑，停留在对局位会穿模）
+  camera.position.set(0, 6, 8);
+  camera.lookAt(0, 1.5, 0);
+  showLevelSelect();
 }
 
 // ============================================
@@ -3804,23 +3901,36 @@ function init() {
   spawnMonsters(MENU_COMPOSITION);
 
   // Button handlers
-  document.getElementById('start-btn').addEventListener('click', startGame);
+  document.getElementById('start-btn').addEventListener('click', function () { startGame(continueLevelId()); });
   document.getElementById('restart-btn').addEventListener('click', restartGame);
   document.getElementById('next-btn').addEventListener('click', function () {
     endScreen.classList.add('hidden');
     startGame(state.currentLevelId + 1);   // 结算屏「下一关」直进（§7 选关 UI）
   });
+  document.getElementById('select-btn').addEventListener('click', showLevelSelect);
+  document.getElementById('select-back-btn').addEventListener('click', backToStart);
+  document.getElementById('abandon-btn').addEventListener('click', abandonLevel);
 
   // Keyboard start - allow spacebar or enter to start
   window.addEventListener('keydown', function startKeyHandler(e) {
     if (state.status === 'menu' && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
-      startGame();
+      startGame(continueLevelId());   // 键盘开局 = 主按钮同款「继续游戏」
     }
     if (state.status === 'ended' && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
       restartGame();
     }
+  });
+
+  // 存档层初始化：坏档备份重置 / 内存降级在此发生（§7）；另一标签页写盘合并后刷新 UI
+  readSave();
+  updateStartButton();
+  updateSaveBadge();
+  onSaveMerged(function () {
+    updateStartButton();
+    updateSaveBadge();
+    if (!levelSelectScreen.classList.contains('hidden')) renderLevelCards();
   });
 
   // Setup mobile controls
@@ -3835,7 +3945,7 @@ function init() {
   console.log('%c VALORANT Training Range %c Ready ',
     'color: #ff4655; font-size: 18px; font-weight: bold;',
     'color: #00d4ff;');
-  console.log('%c Click "进入训练" or press Enter to start',
+  console.log('%c Click "继续游戏" or press Enter to start',
     'color: #ece8e1;');
 }
 
