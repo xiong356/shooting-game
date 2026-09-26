@@ -1,7 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 
 const ROOT = __dirname;
 const PORT = 3000;
@@ -64,12 +64,16 @@ function openBrowser(port) {
   if (browserOpened) return;
   browserOpened = true;
   const url = 'http://' + HOST + ':' + port;
-  const cmd = process.platform === 'win32'
-    ? 'start "" "' + url + '"'
-    : process.platform === 'darwin'
-      ? 'open "' + url + '"'
-      : 'xdg-open "' + url + '"';
-  exec(cmd, (execErr) => {
-    if (execErr) console.log('浏览器未自动打开，请手动访问: ' + url);
-  });
+  const opts = { stdio: 'ignore', detached: true };
+  const onError = () => console.log('浏览器未自动打开，请手动访问: ' + url);
+  // 一律参数数组直启进程：URL 作为独立参数传递，不经 shell 解析，无命令注入面。
+  // （此前 exec('start "" "' + url + '"') 拼接 shell 命令串，被 Mimosa L3 判为命令注入模式。
+  //   win32 用 rundll32 FileProtocolHandler 打开默认浏览器，避开 cmd /c start 的 shell 语义。）
+  if (process.platform === 'win32') {
+    spawn('rundll32', ['url.dll,FileProtocolHandler', url], opts).on('error', onError).unref();
+  } else if (process.platform === 'darwin') {
+    spawn('open', [url], opts).on('error', onError).unref();
+  } else {
+    spawn('xdg-open', [url], opts).on('error', onError).unref();
+  }
 }
