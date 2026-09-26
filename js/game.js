@@ -17,9 +17,9 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS } from './config/weapons.js';
-import { LEVELS, HP_CALIB_MUL, GRADE_CONFIG } from './config/levels.js';
+import { LEVELS, HP_CALIB_MUL, gradeFor } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
-import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged } from './save.js';
+import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged, unlockAll } from './save.js';
 
 // 当前武器参数（M0.5②：per-weapon 数值唯一真源在 js/config/weapons.js）。
 // 现阶段只有 AK，M4 切枪框架接入后改为随 currentWeaponId 切换。
@@ -3369,28 +3369,8 @@ function damagePlayer(amount) {
 // ============================================
 // GAME STATE MANAGEMENT
 // ============================================
-/**
- * 评级（§6 S/A/B/F）。纯函数（state 无关）——level-test 从本文件抽取此实现做门禁，
- * 签名/口径不可随意改。阈值口径：accuracy = shotsHit/shotsFired（与 M0 池化一致）；
- * headshotRate = headshots/shotsHit（§2 标定口径，非爆头/开枪）。
- * 命中率门 = 标定中位数 ± offset（GRADE_CONFIG），标定值 null 时回退固定阈值；
- * S 档另要求爆头 ≥40% 且用时 ≤ parTime×1.2；B = 通关保底；F = 阵亡。
- * @param {{died:boolean, shotsFired:number, shotsHit:number, headshots:number, elapsedSec:number}} stats
- * @param {{parTime:number}} level 关卡行
- * @returns {'S'|'A'|'B'|'F'}
- */
-function gradeFor(stats, level) {
-  if (stats.died) return 'F';
-  const accPct = stats.shotsFired > 0 ? stats.shotsHit / stats.shotsFired * 100 : 0;
-  const hsPct = stats.shotsHit > 0 ? stats.headshots / stats.shotsHit * 100 : 0;
-  const calibrated = GRADE_CONFIG.calibratedAccuracyMedian !== null;
-  const sAcc = calibrated ? GRADE_CONFIG.calibratedAccuracyMedian + GRADE_CONFIG.sAccuracyOffset : GRADE_CONFIG.sAccuracyThreshold;
-  const aAcc = calibrated ? GRADE_CONFIG.calibratedAccuracyMedian + GRADE_CONFIG.aAccuracyOffset : GRADE_CONFIG.aAccuracyThreshold;
-  const timeOk = stats.elapsedSec <= level.parTime * GRADE_CONFIG.sTimeMul;
-  if (accPct >= sAcc && hsPct >= GRADE_CONFIG.sHeadshotThreshold && timeOk) return 'S';
-  if (accPct >= aAcc) return 'A';
-  return 'B';
-}
+// gradeFor（§6 S/A/B/F）在 js/config/levels.js（M1⑥ 迁入配置层：纯函数可被
+// node 门禁直接 import，避免动态求值）。本文件经 import 使用。
 
 function startGame(levelId) {
   initAudio();
@@ -4021,6 +4001,11 @@ window.__SNAPSHOT__.obstacles     = () => solidObstacles.map(o => ({...o}));
 window.__SNAPSHOT__.calibSamples = getCalibSamples;
 window.__SNAPSHOT__.calibClear = clearCalibSamples;
 window.__SNAPSHOT__.calibSummary = calibSummary;
+// ---- M1 关卡系统探针接口（§8.1：.loadLevel/.saveRead/.unlockAll/.gradeFor，探针逐关自动验收）----
+window.__SNAPSHOT__.loadLevel = function (n) { startGame(n); };
+window.__SNAPSHOT__.saveRead  = function () { return { save: getSave(), meta: getSaveMeta() }; };
+window.__SNAPSHOT__.unlockAll = function () { unlockAll(); return getSave(); };
+window.__SNAPSHOT__.gradeFor  = gradeFor;
 
 // Boot
 init();

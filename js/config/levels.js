@@ -42,7 +42,6 @@ export const LEVELS = [
 
 // §6 评级阈值常量（S/A/B/F）。命中率门 = 标定中位数 ± offset（M0 标定 n=14），
 // 爆头门/时间门为固定值；fallback 固定阈值仅当 calibratedAccuracyMedian 为 null 时使用。
-// 消费方：game.js gradeFor(stats, level)（纯函数，结算屏与 __SNAPSHOT__.gradeFor 共用）。
 export const GRADE_CONFIG = {
   calibratedAccuracyMedian: 70.7,   // M0 实测池化命中率（%），null = 未标定走 fallback
   sAccuracyOffset: 5,               // S 门 = 中位数 +5 → 75.7
@@ -52,6 +51,30 @@ export const GRADE_CONFIG = {
   sHeadshotThreshold: 40,           // S 档爆头门（%），口径 = 爆头数/总命中（与 M0 池化一致）
   sTimeMul: 1.2,                    // S 档时间门 = parTime × 1.2
 };
+
+/**
+ * 评级（§6 S/A/B/F）。纯函数，与 validateLevels 同住配置层——零依赖、浏览器/node 均可 import
+ * （level-test 直接 import 本实现做门禁，game.js 结算屏与 __SNAPSHOT__.gradeFor 共用）。
+ * 口径：accuracy = shotsHit/shotsFired（与 M0 池化标定一致）；
+ * headshotRate = headshots/shotsHit（§2 标定口径，非爆头/开枪）。
+ * 命中率门 = 标定中位数 ± offset，标定值 null 回退固定阈值；S 档另要求爆头 ≥40% 且
+ * 用时 ≤ parTime×1.2；B = 通关保底；F = 阵亡。
+ * @param {{died:boolean, shotsFired:number, shotsHit:number, headshots:number, elapsedSec:number}} stats
+ * @param {{parTime:number}} level 关卡行
+ * @returns {'S'|'A'|'B'|'F'}
+ */
+export function gradeFor(stats, level) {
+  if (stats.died) return 'F';
+  const accPct = stats.shotsFired > 0 ? stats.shotsHit / stats.shotsFired * 100 : 0;
+  const hsPct = stats.shotsHit > 0 ? stats.headshots / stats.shotsHit * 100 : 0;
+  const calibrated = GRADE_CONFIG.calibratedAccuracyMedian !== null;
+  const sAcc = calibrated ? GRADE_CONFIG.calibratedAccuracyMedian + GRADE_CONFIG.sAccuracyOffset : GRADE_CONFIG.sAccuracyThreshold;
+  const aAcc = calibrated ? GRADE_CONFIG.calibratedAccuracyMedian + GRADE_CONFIG.aAccuracyOffset : GRADE_CONFIG.aAccuracyThreshold;
+  const timeOk = stats.elapsedSec <= level.parTime * GRADE_CONFIG.sTimeMul;
+  if (accPct >= sAcc && hsPct >= GRADE_CONFIG.sHeadshotThreshold && timeOk) return 'S';
+  if (accPct >= aAcc) return 'A';
+  return 'B';
+}
 
 // ---- schema 取值域 ----
 // 怪种：红/蓝（现有）+ 蟹/精英红/精英蓝（M3）；'boss' 不入 spawns（§4.1 Boss 关 adds 自管）。

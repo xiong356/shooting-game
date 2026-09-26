@@ -1,9 +1,11 @@
-// M1 关卡系统门禁：§7 存档规则 + 评级矩阵 + 血池推导
-// 方法论与 attack-test.js 一致：不复制实现。
+// M1 关卡系统门禁：§7 存档规则 + §6 评级矩阵 + P4 血池推导
+// 方法论与 esm-lint 同构：不复制实现，import 真实模块求值。
 //   - save 规则组：js/save.js 复制为 .mjs 副本，import 前先装内存版 localStorage
 //     （save.js 零 import、localStorage 全在 try/catch 内，node 可安全求值；
 //      query 串区分缓存，每个 scenario 拿到全新模块状态）。
-//   - 评级/血池组：extractFn/grabConst 从真实源码抽取纯函数与常量（M1⑥ 补齐）。
+//   - 评级/血池组：js/config/levels.js 纯数据+纯函数，.mjs 副本直接 import
+//     （gradeFor/LEVELS/HP_CALIB_MUL）；MONSTER_SPECS 所在的 monsters.js import 了
+//     three 无法在 node 求值，用正则读基座数字字面量（只读数字，不求值）。
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -29,19 +31,22 @@ function mockStorage(initial) {
   };
 }
 
-/** save.js → .mjs 副本 + 独立 query import：每个 scenario 全新模块状态 */
-async function freshSaveModule(tag, initialStorage) {
-  const dest = path.join(TMP, 'save-under-test.mjs');
-  fs.copyFileSync(path.join(ROOT, 'js/save.js'), dest);
+/** js/<name>.js → .mjs 副本 + 独立 query import：每个 scenario 全新模块状态 */
+async function freshModule(relPath, tag, initialStorage) {
+  const dest = path.join(TMP, path.basename(relPath).replace(/\.js$/, '.mjs'));
+  fs.copyFileSync(path.join(ROOT, relPath), dest);
   globalThis.localStorage = mockStorage(initialStorage);
   const mod = await import(pathToFileURL(dest).href + '?case=' + tag);
   return { mod, ls: globalThis.localStorage };
 }
 
 (async function main() {
+  // 评级/血池组共用的 levels 模块（纯数据+纯函数，node 可 import）
+  const { mod: L } = await freshModule('js/config/levels.js', 'levels');
+
   console.log('=== 组 1：首次读档 = 默认档（§7）===');
   {
-    const { mod, ls } = await freshSaveModule('fresh');
+    const { mod, ls } = await freshModule('js/save.js', 'fresh');
     const r = mod.readSave();
     ok(r.save.unlocked === 1, 'unlocked 初始为 1', r.save.unlocked);
     ok(r.save.weapons.length === 1 && r.save.weapons[0] === 'ak47', 'weapons 初始只有 ak47', r.save.weapons);
@@ -52,7 +57,7 @@ async function freshSaveModule(tag, initialStorage) {
 
   console.log('=== 组 2：过关结算事务（unlock/取优/clears/revision）===');
   {
-    const { mod } = await freshSaveModule('apply');
+    const { mod } = await freshModule('js/save.js', 'apply');
     mod.applyLevelResult(1, { grade: 'A', score: 4200, combo: 12 });
     mod.applyLevelResult(1, { grade: 'B', score: 9999, combo: 20 });   // 分数更高、评级更低
     const t3 = mod.applyLevelResult(1, { grade: 'S', score: 100, combo: 5 }); // 评级更高、分数更低
@@ -77,7 +82,7 @@ async function freshSaveModule(tag, initialStorage) {
 
   console.log('=== 组 3：坏 JSON → 备份 + 重置（§7）===');
   {
-    const { mod, ls } = await freshSaveModule('corrupt', { 'wk.pve.save.v1': '{broken json' });
+    const { mod, ls } = await freshModule('js/save.js', 'corrupt', { 'wk.pve.save.v1': '{broken json' });
     const r = mod.readSave();
     ok(r.meta.reset === true, 'meta.reset 置位', r.meta);
     ok(r.save.unlocked === 1, '重置为默认档', r.save);
@@ -87,7 +92,7 @@ async function freshSaveModule(tag, initialStorage) {
 
   console.log('=== 组 4：schemaVersion 不匹配 → 备份 + 重置（§7）===');
   {
-    const { mod, ls } = await freshSaveModule('schema', { 'wk.pve.save.v1': JSON.stringify({ schemaVersion: 99, unlocked: 5 }) });
+    const { mod, ls } = await freshModule('js/save.js', 'schema', { 'wk.pve.save.v1': JSON.stringify({ schemaVersion: 99, unlocked: 5 }) });
     const r = mod.readSave();
     ok(r.meta.reset === true && r.save.unlocked === 1, '版本门拦截并重置', [r.meta, r.save.unlocked]);
     ok(ls.store.get('wk.pve.save.v1.backup').includes('"schemaVersion":99'), '旧档备份');
@@ -95,7 +100,7 @@ async function freshSaveModule(tag, initialStorage) {
 
   console.log('=== 组 5：写失败 → 内存档降级，恢复后可续写（§7）===');
   {
-    const { mod, ls } = await freshSaveModule('degrade');
+    const { mod, ls } = await freshModule('js/save.js', 'degrade');
     mod.readSave();
     const diskBefore = ls.store.get('wk.pve.save.v1');   // 读档时默认档已合法落盘
     const realSet = ls.setItem;
@@ -114,21 +119,67 @@ async function freshSaveModule(tag, initialStorage) {
 
   console.log('=== 组 6：unlockAll 封顶与消毒 ===');
   {
-    const { mod } = await freshSaveModule('unlockall');
+    const { mod } = await freshModule('js/save.js', 'unlockall');
     mod.unlockAll();
     ok(mod.getSave().unlocked === 7, 'unlockAll 封顶 7（§7）', mod.getSave().unlocked);
     const t = mod.applyLevelResult(7, { grade: 'S', score: 1, combo: 1 });
     ok(t.unlockedTo === 7, 'L7 通关不越界（min 封顶）', t.unlockedTo);
   }
 
-  console.log('=== 组 7：消毒（normalizeSave 字段容错）===');
+  console.log('=== 组 7：消毒（字段容错）===');
   {
-    const { mod } = await freshSaveModule('normalize', {
+    const { mod } = await freshModule('js/save.js', 'normalize', {
       'wk.pve.save.v1': JSON.stringify({ schemaVersion: 1, unlocked: 3, weapons: ['shotgun'], revision: 2 }),
     });
     const s = mod.getSave();
     ok(s.unlocked === 3 && s.revision === 2, '合法字段保留', s);
     ok(s.weapons[0] === 'ak47' && s.weapons.includes('shotgun'), 'ak47 永远在列（消毒补回）', s.weapons);
+  }
+
+  console.log('=== 组 8：gradeFor 评级矩阵（§6 S/A/B/F）===');
+  {
+    ok(typeof L.gradeFor === 'function', 'levels.js 导出 gradeFor（game.js/门禁共用实现）');
+    const g = L.gradeFor;
+    const par = { parTime: 40 };
+    // shotsFired 固定 1000（0.1pp 粒度，够测 75.7/65.7 的 0.1pp 边界）；hs% 换算爆头原始计数
+    const stats = (acc, hs, t, died) => {
+      const hit = Math.round(acc * 10);
+      return { died: !!died, shotsFired: 1000, shotsHit: hit, headshots: Math.round(hit * hs / 100), elapsedSec: t };
+    };
+    ok(g(stats(50, 10, 10, true), par) === 'F', '阵亡一律 F（无论数据多好）');
+    ok(g(stats(80, 45, 40), par) === 'S', '全优 → S');
+    ok(g(stats(75.7, 45, 40), par) === 'S', '命中率门 75.7 边界（≥ 收）');
+    ok(g(stats(75.6, 45, 40), par) === 'A', '命中率 75.6（< 门 0.1pp）→ A');
+    ok(g(stats(80, 40, 40), par) === 'S', '爆头门 40 边界（≥ 收）');
+    ok(g(stats(80, 39, 40), par) === 'A', '爆头 39（< 门）→ A');
+    ok(g(stats(80, 45, 48), par) === 'S', '时间门 parTime×1.2 边界（≤ 收）');
+    ok(g(stats(80, 45, 48.1), par) === 'A', '超时 0.1s → A');
+    ok(g(stats(65.7, 10, 100), par) === 'A', 'A 门 65.7 边界（≥ 收，不看爆头/时间）');
+    ok(g(stats(65.6, 50, 10), par) === 'B', '命中率 65.6 → B（保底）');
+    ok(g(stats(0, 0, 200), par) === 'B', '零命中通关 → B');
+  }
+
+  console.log('=== 组 9：血池推导断言（P4：§4 总表 × k=1.5）===');
+  {
+    // 怪种基座 HP：monsters.js import three 无法求值，正则读数字字面量（只读数字，不求值）
+    const monstersSrc = fs.readFileSync(path.join(ROOT, 'js/monsters.js'), 'utf8');
+    const baseHP = {};
+    for (const m of monstersSrc.matchAll(/^\s{2}(red|blue):\s*\{ maxHealth: (\d+)/gm)) {
+      baseHP[m[1]] = Number(m[2]);
+    }
+    ok(baseHP.red === 150 && baseHP.blue === 100, '怪种基座读取（红150/蓝100，§2）', baseHP);
+
+    // §4 总表血池列（M1 版：L4/L5 替身行目标值见 levels.js 行注释）
+    const EXPECTED = [900, 1125, 1485, 1485, 1733];
+    ok(L.LEVELS.length === EXPECTED.length, 'LEVELS 行数 = 5（M1 范围）', L.LEVELS.length);
+    for (let i = 0; i < L.LEVELS.length; i++) {
+      const lv = L.LEVELS[i];
+      const pre = lv.spawns.reduce((sum, s) => sum + baseHP[s.type] * s.count, 0);
+      const pool = pre * lv.hpMul * L.HP_CALIB_MUL;
+      const target = EXPECTED[i];
+      ok(Math.abs(pool - target) / target <= 0.01,
+        'L' + lv.id + ' 血池 ' + Math.round(pool) + ' ≈ ' + target + '（±1%）', { pre, pool, target });
+    }
   }
 
   console.log('');
