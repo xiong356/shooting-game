@@ -17,7 +17,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS } from './config/weapons.js';
-import { LEVELS, HP_CALIB_MUL, LAYOUTS, gradeFor } from './config/levels.js';
+import { LEVELS, HP_CALIB_MUL, LAYOUTS, CRAB_CONFIG, gradeFor } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
 import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged, unlockAll } from './save.js';
 
@@ -83,6 +83,7 @@ const state = {
   lastTime: 0,
   redAlive: 0,
   blueAlive: 0,
+  crabAlive: 0,   // 迅捷蟹存活数（M3③，HUD 第三计数）
   playerHealth: PLAYER_MAX_HEALTH,
   // 结算统计
   kills: 0,
@@ -703,6 +704,13 @@ function spawnMonsters(composition, mul) {
       avoidStall: 0,
       avoidMarkX: 0,
       avoidMarkZ: 0,
+      // ---- 迅捷蟹字段（M3②；红/蓝怪闲置不用）----
+      crabState: 'rush',
+      crabT: 0,
+      pounceCooldown: 0,
+      heading: Math.random() * Math.PI * 2,   // 初始朝向随机（贴地蟹无 lookAt 朝向约束）
+      lungeX: 0,
+      lungeZ: 0,
         // ---- 攻击状态机（红近战 / 蓝远程，见 MONSTER ATTACK 区块）----
         attackState: 'idle',   // 红怪：'idle' | 'windup' | 'strike'
         attackT: 0,
@@ -761,6 +769,15 @@ function damageMonster(monster, isHeadshot) {
   return false;
 }
 
+// 击杀播报名字映射（M3③：蟹/精英加入，避免三元写死）
+const MONSTER_NAMES = {
+  red: '猩红石像',
+  blue: '蔚蓝石像',
+  crab: '迅捷蟹',
+  eliteRed: '猩红石像·精英',
+  eliteBlue: '蔚蓝石像·精英',
+};
+
 /** 判定死亡：停 AI、不可再被击中、立刻从存活数扣除，并启动死亡动画 */
 function killMonster(monster) {
   const ud = monster.userData;
@@ -791,7 +808,7 @@ function killMonster(monster) {
     }
   });
 
-  addKillFeed(ud.type === 'red' ? '猩红石像' : '蔚蓝石像', ud.type);
+  addKillFeed(MONSTER_NAMES[ud.type] ?? '野怪', ud.type);
   playKillSound();
   state.kills++;
   state.score += SCORE_PER_KILL;
@@ -816,10 +833,11 @@ function updateDeathAnimation(monster, dt) {
   ud.deathT += dt;
   const t = Math.min(ud.deathT / DEATH_DURATION, 1);
 
-  // 位移与放大：easeOutCubic（起步快、收尾慢，像被击飞后减速）
+  // 位移与放大：easeOutCubic（起步快、收尾慢，像被击飞后减速）。
+  // 乘 baseScale：精英基础体型 ×1.3（绝对 setScalar 会覆盖掉它，M3③）
   const e = 1 - Math.pow(1 - t, 3);
   monster.position.lerpVectors(ud.deathStartPos, ud.deathEndPos, e);
-  monster.scale.setScalar(1 + (DEATH_SCALE_TO - 1) * e);
+  monster.scale.setScalar((ud.baseScale ?? 1) * (1 + (DEATH_SCALE_TO - 1) * e));
 
   // 淡出：t² 让后半段加速消失，避免留下"半透明僵尸"
   const opacity = 1 - t * t;
@@ -1163,6 +1181,7 @@ function spawnMonsterProjectile(monster) {
   proj.userData = {
     velocity: dir.multiplyScalar(BLUE_PROJ_SPEED),
     life: BLUE_PROJ_LIFE,
+    damage: ud.projDamage ?? BLUE_CAST_DAMAGE,   // per-type：精英蓝 ×1.5（M3③）
   };
 
   scene.add(proj);
@@ -1202,7 +1221,7 @@ function updateMonsterProjectiles(dt) {
 
     // 命中玩家 → 扣血 + 爆粒子消失
     if (projectileHitPlayer(p.position.x, p.position.y, p.position.z, playerPosition.x, playerPosition.z, BLUE_PROJ_RADIUS)) {
-      damagePlayer(BLUE_CAST_DAMAGE);
+      damagePlayer(ud.damage);
       spawnParticles(p.position, '#3399ff', 10);
       disposeProjectile(p);
       monsterProjectiles.splice(i, 1);
@@ -3160,19 +3179,27 @@ function updateMonsters(dt) {
     ud.alert = dist <= ud.alertZone;
 
     if (ud.alert) {
-      // 面朝玩家
-      monster.lookAt(playerPosition.x, monster.position.y, playerPosition.z);
+      // 面朝玩家。蟹例外：面向自身 heading（转向钝的可见性——身体朝向滞后于玩家方向，
+      // 横向滑步时能看到它"甩尾不及"，§5.3 弱点可读 P2）
+      if (ud.type === 'crab') {
+        monster.rotation.y = ud.crabHeading;
+      } else {
+        monster.lookAt(playerPosition.x, monster.position.y, playerPosition.z);
+      }
 
-      // 攻击状态机（红近战 / 蓝远程）。攻击都要求视线通畅（isPathClear），
+      // 攻击状态机（红近战 / 蟹突进 / 蓝远程）。攻击都要求视线通畅（isPathClear），
       // 隔着掩体时野怪只会继续绕行，不会攻击
       if (ud.type === 'red') updateMeleeAttack(monster, ud, dist, dt);
+      else if (ud.type === 'crab') updateCrab(monster, ud, dist, dt);   // 移动+扑击全权自驱（§5.3 三段式）
       else updateRangedAttack(monster, ud, dist, dt);
 
       // 追逐（匀速，保持距离）。碰撞与正面绕行都在 stepMonsterChase 内部。
       // 门控用 shouldChase（距离 + 视线），不是纯距离 —— 理由见该函数的注释。
-      // 红怪挥击期间（windup/strike）锁移动，前冲由状态机自己驱动
+      // 红怪挥击期间（windup/strike）锁移动，前冲由状态机自己驱动；
+      // 蟹不走 stepMonsterChase（转向钝 + 排斥避障是它的专属弱点设定，§9）
       const meleeLocked = ud.type === 'red' && ud.attackState !== 'idle';
-      if (!meleeLocked && shouldChase(dist, ud.stopDist, monster.position, playerPosition.x, playerPosition.z)) {
+      const crabSelfDriven = ud.type === 'crab';
+      if (!meleeLocked && !crabSelfDriven && shouldChase(dist, ud.stopDist, monster.position, playerPosition.x, playerPosition.z)) {
         stepMonsterChase(monster.position, ud, playerPosition.x, playerPosition.z, ud.chaseSpeed, dt);
       }
     } else if (wasAlert) {
@@ -3181,6 +3208,10 @@ function updateMonsters(dt) {
         ud.attackState = 'idle';
         ud.attackT = 0;
         resetMeleePose(ud);
+      } else if (ud.type === 'crab') {
+        ud.crabState = 'rush';
+        ud.crabT = 0;
+        resetCrabPose(ud);
       } else {
         ud.castState = 'idle';
         ud.castT = 0;
@@ -3286,7 +3317,7 @@ function updateMeleeAttack(monster, ud, dist, dt) {
     ud.meleeHitDone = true;
     if (dist <= RED_MELEE_HIT_RANGE &&
         isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
-      damagePlayer(RED_MELEE_DAMAGE);
+      damagePlayer(ud.meleeDamage ?? RED_MELEE_DAMAGE);   // per-type：精英红 ×1.5（M3③）
     }
   }
 
@@ -3350,19 +3381,169 @@ function updateRangedAttack(monster, ud, dist, dt) {
   }
 }
 
+// --- 迅捷蟹（§5.3：Z 字突进 → 扑击 → 后跳，三段都有位移预警）---
+const CRAB_TURN_RATE = 120 * Math.PI / 180; // 转向角速度上限（rad/s）：转向半径 v/ω ≈ 3.8m——横向滑步能甩掉的几何来源
+const CRAB_RUSH_MAX = 1.4;         // 单段突进时长上限（秒）——到点强制后跳，防无限直线冲（§9 贴角 ≥2.5s 的节奏来源）
+const CRAB_HOP_TIME = 0.3;         // 后跳时长（=玩家的脱战窗口，§5.3）
+const CRAB_HOP_SPEED = 5.3;        // 后跳速度（0.3s × 5.3 ≈ 1.6m 拉开）
+const CRAB_POUNCE_RANGE = 1.6;     // 进入扑击的距离门限
+const CRAB_POUNCE_HIT_RANGE = 1.4; // 扑击首帧判伤距离
+const CRAB_POUNCE_WINDUP = 0.3;    // 蓄力前摇（压低身体=位移预警，P2）
+const CRAB_POUNCE_TIME = 0.25;     // 扑击时长
+const CRAB_POUNCE_SPEED = 10;      // 扑击速度（0.25s × 10 = 2.5m 扑程）
+const CRAB_POUNCE_COOLDOWN = 2.0;  // 扑击间隔（§5.3 冷却 2s）
+const CRAB_LEAN_WINDUP = -0.25;    // 蓄力后坐姿态（rad）
+const CRAB_LEAN_LUNGE = 0.2;       // 扑击前倾姿态（rad）
+const CRAB_BOUNDS = { x: 25.6, zMin: -45.6, zMax: 11.6 };  // 蟹不出可玩区（半径 0.35 + 余量）
+
+/** 复位蟹姿态（bodyPivot 归零；蟹无手臂引用，扑击动画只动身体俯仰） */
+function resetCrabPose(ud) {
+  if (ud.bodyPivot) ud.bodyPivot.rotation.x = 0;
+}
+
+/**
+ * 蟹的突进移动（纯函数，steering-test 抽取做 §9 两条验收）。
+ * ① 转向钝：持独立朝向角 heading，每帧朝玩家 bearing 旋转、clamp ±CRAB_TURN_RATE×dt；
+ *    移动沿 heading 而非直视玩家——追横向移动目标自然甩出 Z 字。
+ * ② 排斥力避障（§9：绝不套 findDetourCorner 强绕行——那会消掉转向钝弱点）：
+ *    对每个障碍 AABB 外扩 CRAB_CONFIG.avoidRadius 内施加线性衰减排斥力
+ *    (1 - d/radius) × CRAB_CONFIG.avoidStrength，多障碍矢量叠加进移动方向，无拐角搜索。
+ */
+function stepCrabChase(pos, ud, playerX, playerZ, dt) {
+  // heading 朝玩家 bearing 旋转（限速）
+  const dx = playerX - pos.x;
+  const dz = playerZ - pos.z;
+  let diff = Math.atan2(dx, dz) - ud.crabHeading;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  const maxTurn = CRAB_TURN_RATE * dt;
+  ud.crabHeading += Math.max(-maxTurn, Math.min(maxTurn, diff));
+
+  // 排斥力叠加（障碍最近点 → 蟹心 方向）
+  let ax = 0, az = 0;
+  for (const o of solidObstacles) {
+    const cx = Math.max(o.minX, Math.min(pos.x, o.maxX));
+    const cz = Math.max(o.minZ, Math.min(pos.z, o.maxZ));
+    const ox = pos.x - cx;
+    const oz = pos.z - cz;
+    const d = Math.hypot(ox, oz);
+    if (d > CRAB_CONFIG.avoidRadius) continue;
+    const str = (1 - d / CRAB_CONFIG.avoidRadius) * CRAB_CONFIG.avoidStrength;
+    if (d < 1e-6) { ax += Math.sin(ud.crabHeading + Math.PI); az += Math.cos(ud.crabHeading + Math.PI); continue; }
+    ax += (ox / d) * str;
+    az += (oz / d) * str;
+  }
+
+  // 移动方向 = heading 单位向量 + 排斥合力，归一化后匀速推进
+  let mx = Math.sin(ud.crabHeading) + ax;
+  let mz = Math.cos(ud.crabHeading) + az;
+  const ml = Math.hypot(mx, mz) || 1;
+  pos.x += (mx / ml) * ud.chaseSpeed * dt;
+  pos.z += (mz / ml) * ud.chaseSpeed * dt;
+
+  resolveObstacleCollisions(pos, ud.radius);
+  // 出界钳制（蟹后跳/被挤出可玩区时拉回；边界墙不登记碰撞体）
+  pos.x = Math.max(-CRAB_BOUNDS.x, Math.min(CRAB_BOUNDS.x, pos.x));
+  pos.z = Math.max(CRAB_BOUNDS.zMin, Math.min(CRAB_BOUNDS.zMax, pos.z));
+}
+
+/**
+ * 迅捷蟹状态机（§5.3 三段式，全部带位移预警）：
+ *   rush（钝转向突进）→ 进扑距 → windup（0.3s 压低蓄力，扑向锁定于结束帧——可侧移躲开）
+ *   → lunge（0.25s 扑出 + 首帧判伤）→ hop（0.3s 后跳拉开 = 玩家节奏窗口）→ rush…
+ *   rush 单段 1.4s 上限：没扑到也强制后跳，防无限直线冲（§9 贴角 ≥2.5s 验收的节奏来源）。
+ */
+function updateCrab(monster, ud, dist, dt) {
+  ud.crabT += dt;
+  ud.pounceCooldown -= dt;
+
+  if (ud.crabState === 'rush') {
+    stepCrabChase(monster.position, ud, playerPosition.x, playerPosition.z, dt);
+    if (dist <= CRAB_POUNCE_RANGE && ud.pounceCooldown <= 0 &&
+        isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+      ud.crabState = 'windup';
+      ud.crabT = 0;
+    } else if (ud.crabT >= CRAB_RUSH_MAX) {
+      ud.crabState = 'hop';
+      ud.crabT = 0;
+    }
+    return;
+  }
+
+  if (ud.crabState === 'hop') {
+    // 后跳：沿背向玩家方向直线拉开（方向可预判——这正是窗口的含义）
+    const dirX = monster.position.x - playerPosition.x;
+    const dirZ = monster.position.z - playerPosition.z;
+    const len = Math.hypot(dirX, dirZ) || 1;
+    monster.position.x += dirX / len * CRAB_HOP_SPEED * dt;
+    monster.position.z += dirZ / len * CRAB_HOP_SPEED * dt;
+    resolveObstacleCollisions(monster.position, ud.radius);
+    monster.position.x = Math.max(-CRAB_BOUNDS.x, Math.min(CRAB_BOUNDS.x, monster.position.x));
+    monster.position.z = Math.max(CRAB_BOUNDS.zMin, Math.min(CRAB_BOUNDS.zMax, monster.position.z));
+    if (ud.crabT >= CRAB_HOP_TIME) {
+      ud.crabState = 'rush';
+      ud.crabT = 0;
+    }
+    return;
+  }
+
+  if (ud.crabState === 'windup') {
+    const t = Math.min(ud.crabT / CRAB_POUNCE_WINDUP, 1);
+    if (ud.bodyPivot) ud.bodyPivot.rotation.x = CRAB_LEAN_WINDUP * t;
+    if (ud.crabT >= CRAB_POUNCE_WINDUP) {
+      ud.crabState = 'lunge';
+      ud.crabT = 0;
+      ud.meleeHitDone = false;
+      // 扑向锁定于前摇结束帧（之后不再跟踪玩家——侧移可躲）
+      const dirX = playerPosition.x - monster.position.x;
+      const dirZ = playerPosition.z - monster.position.z;
+      const len = Math.hypot(dirX, dirZ) || 1;
+      ud.lungeX = dirX / len;
+      ud.lungeZ = dirZ / len;
+      playSwingSound();
+    }
+    return;
+  }
+
+  // lunge：锁定方向扑出，首帧判伤（之后扑程内不重复判）
+  monster.position.x += ud.lungeX * CRAB_POUNCE_SPEED * dt;
+  monster.position.z += ud.lungeZ * CRAB_POUNCE_SPEED * dt;
+  if (ud.bodyPivot) ud.bodyPivot.rotation.x = CRAB_LEAN_LUNGE;
+  resolveObstacleCollisions(monster.position, ud.radius);
+
+  if (!ud.meleeHitDone) {
+    ud.meleeHitDone = true;
+    if (dist <= CRAB_POUNCE_HIT_RANGE &&
+        isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+      damagePlayer(ud.meleeDamage);
+    }
+  }
+
+  if (ud.crabT >= CRAB_POUNCE_TIME) {
+    ud.crabState = 'hop';   // 扑完立即后跳拉开（§5.3 三段式收尾，扑空也跳）
+    ud.crabT = 0;
+    ud.pounceCooldown = CRAB_POUNCE_COOLDOWN;
+    resetCrabPose(ud);
+  }
+}
+
 // ============================================
 // UI HELPERS
 // ============================================
 function updateUI() {
   // Update monster count (separate elements)
-  // 存活数：已判定死亡（正在播死亡动画）的野怪不再计入
-  state.redAlive = monsters.filter(m => m.userData.type === 'red' && !m.userData.dying).length;
-  state.blueAlive = monsters.filter(m => m.userData.type === 'blue' && !m.userData.dying).length;
+  // 存活数：已判定死亡（正在播死亡动画）的野怪不再计入。
+  // 精英计入同族计数（猩红/蔚蓝），蟹单列（M3③）
+  state.redAlive = monsters.filter(m => (m.userData.type === 'red' || m.userData.type === 'eliteRed') && !m.userData.dying).length;
+  state.blueAlive = monsters.filter(m => (m.userData.type === 'blue' || m.userData.type === 'eliteBlue') && !m.userData.dying).length;
+  state.crabAlive = monsters.filter(m => m.userData.type === 'crab' && !m.userData.dying).length;
 
   const redEl = document.getElementById('monster-count-red');
   const blueEl = document.getElementById('monster-count-blue');
+  const crabEl = document.getElementById('monster-count-crab');
   if (redEl) redEl.textContent = state.redAlive;
   if (blueEl) blueEl.textContent = state.blueAlive;
+  if (crabEl) crabEl.textContent = state.crabAlive;
 
   // Alert indicator
   const alertEl = document.getElementById('alert-indicator');
@@ -3474,6 +3655,7 @@ function startGame(levelId) {
   state.ammoRefilled = false;
   state.redAlive = 0;
   state.blueAlive = 0;
+  state.crabAlive = 0;
   state.playerHealth = PLAYER_MAX_HEALTH;
   // 结算统计复位
   state.kills = 0;
