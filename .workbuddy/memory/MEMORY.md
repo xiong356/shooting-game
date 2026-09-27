@@ -43,6 +43,7 @@ index.html(UI overlay) / css/styles.css / js/game.js(~2000行) / server.js(静�
 - 外围边界靠 updateMovement 末尾 clamp（x∈[-26,26], z∈[-46,12]）；顺序必须 移动→碰撞→clamp。
 - **障碍间距必须 ≥0.8m（玩家直径）**，否则推出解不存在；registerSolid 会 console.warn 拦截。
 - 绕行：必须朝 `findDetourCorner()` 外扩拐角走（垂直平移会永远蹭墙）；`MONSTER_PROBE_RADIUS=RADIUS*0.6`（探测半径<碰撞半径，否则玩家贴障碍时判定全堵）；`isPathClear` 采样步数硬上限 `Math.min(256,...)` 防 距/0=Infinity 挂死。判定链：getAdvance→isMonsterHeadOnBlocked(阈值0.3)→只正面顶住才绕行。
+- **⚠️ 绕行角点两道死锁防线（2026-09-27 卡墙边缘 bug 修复，组 9 钉死）**：① `findDetourCorner` 跳过 d<MONSTER_RADIUS 的近角——绕行会精确走到外扩角上，d=0 的自身角被贪心选中=目标是自己=位移恒 0 冻结；② 角点**承诺制**（ud.avoidCornerX/Y，走到到达/失效才重选）——每帧贪心取最近合法角会在相邻角点间乒乓（离角 0.67m 时身后的角又变最近），绝对不能改回无记忆重选。另有 45 帧无进展翻侧兜底（ud.avoidStall）。
 
 ## 测试与调试（全部在 `.workbuddy/tests/`，别放系统 Temp——会被 Windows 清掉）
 - esm-lint.js（静态门禁）、collision-test.js、steering-test.js、monster-probe.js、walk-probe.js；ROOT 用 `path.resolve(__dirname,'../..')` 推导。
