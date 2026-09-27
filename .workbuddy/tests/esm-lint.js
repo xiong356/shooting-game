@@ -77,7 +77,7 @@ async function main() {
     failed++;
   }
 
-  // ---- 规则③：LEVELS schema 校验（§8.1，校验器真身在 js/config/levels.js）----
+  // ---- 规则③：LEVELS schema + LAYOUTS 布局预设校验（§8.1，校验器真身在 js/config/levels.js）----
   try {
     const mod = await import(pathToFileURL(path.join(TMP, 'levels.mjs')).href);
     const errs = mod.validateLevels(mod.LEVELS);
@@ -86,6 +86,15 @@ async function main() {
       failed += errs.length;
     } else {
       console.log('[OK] LEVELS schema 校验: ' + mod.LEVELS.length + ' 关通过');
+    }
+    for (const name of Object.keys(mod.LAYOUTS)) {
+      const layoutErrs = mod.validateLayout(mod.LAYOUTS[name]);
+      if (layoutErrs.length) {
+        layoutErrs.forEach(x => console.log('[FAIL] LAYOUTS.' + name + ': ' + x));
+        failed += layoutErrs.length;
+      } else {
+        console.log('[OK] LAYOUTS.' + name + ' 布局校验: ' + mod.LAYOUTS[name].length + ' 障碍通过');
+      }
     }
   } catch (e) {
     console.log('[FAIL] 无法 import levels.js 求值: ' + e.message);
