@@ -1,6 +1,6 @@
 # 王者峡谷 PvE · 关卡系统设计文档
 
-> 版本 v1.4 · 2026-09-25 · 状态：**M0.5 完成（§8.0 四文件拆分就位，行为不变，四门禁+esm-lint 全绿 + 浏览器冒烟通过）**
+> 版本 v1.5 · 2026-09-27 · 状态：**M2 完成（§5.2 场地变体 A/B 落地：布局即数据 LAYOUTS 预设 + applyLayout 清场重建 + 无残留回归用例；四门禁 + level-test 60 断言 + level-probe 18 断言全绿。M1 元循环骨架同前：L1-L5 闯关/存档/评级/选关已可玩）**
 > 读者对象：实现者。目标：30 分钟读完即可开工。
 > 数值标注规则：✅ 有 rationale（含推导）｜`[PLACEHOLDER]` 已填占位值 + 假设 + 验证路径｜⚗️ 必须 playtest 标定后才准进正式 build
 >
@@ -36,10 +36,10 @@
 | AK-47 | 单发 34 / 爆头 ×2 / 射速 0.12s/发 / 弹匣 30 / 换弹 1.5s | `WEAPONS.ak47.damage/fireInterval/magSize/reloadTime`（js/config/weapons.js） |
 | 红怪（近战） | 150 HP / 伤害 25 / 追速 5.0 / 停步 1.8m | `MONSTER_SPECS.red`（js/monsters.js）/ `RED_MELEE_DAMAGE` |
 | 蓝怪（远程施法） | 100 HP / 伤害 10 / 射程 12m / 吟唱 0.4s / 冷却 1.5s | `MONSTER_SPECS.blue` + `BLUE_CAST_RANGE`（js/monsters.js）/ 其余 `BLUE_CAST_*` |
-| 单局刷怪 | 6~8 只同场，杀光即胜利 | `spawnMonsters(6~8)` |
+| 单局刷怪 | M1 起：按关卡 `spawns` 组成表（L1 红×4 … L5 红×5 蓝×3）；菜单背景 7 只混编 | `spawnMonsters(lv.spawns, mul)` / `MENU_COMPOSITION` |
 | 计分 | 命中 10 / 爆头额外 25 / 击杀 100 | `SCORE_PER_*` |
-| 评级 | 可达态二值：胜利 S / 阵亡 F（代码另含不可达 `'PvE'` 超时分支，为死代码，关卡系统启用时移除） | `endGame()` |
-| 场地 | x∈[-26,26], z∈[-46,12]，9 个碰撞障碍 | `solidObstacles` |
+| 评级 | S/A/B/F（§6 动态阈值：S 门 75.7%）；二值 S/F 与 `'PvE'`/`timeLeft` 死分支已在 M1③ 移除 | `gradeFor`（js/config/levels.js）+ `endGame()` |
+| 场地 | x∈[-26,26], z∈[-46,12]；碰撞障碍**随布局** 9（default）/11（variantA）/6（variantB） | `solidObstacles`（M2② `applyLayout` 按 `LAYOUTS` 预设重建，js/config/levels.js） |
 | **弹道散布（两层）** | 站桩精准；移动 inaccuracy（开火移速 2.4 → 0.15 rad，10m 散布半径 ≈1.5m）+ 空中 ×2.5 + 水平后坐固定 spray pattern（10 发循环） | `WEAPONS.ak47.spreadPerSpeed/spreadAirMult/sprayPattern`（js/config/weapons.js） |
 | **穿墙遮挡** | 子弹射线被障碍 AABB 拦截（含高度门控），隔墙不判伤 | `rayHitObstacleDistance` |
 
@@ -131,12 +131,15 @@ L4 教学负载说明：霰弹枪是 **L3 通关奖励**，L4 开始时玩家已
 
 ### 5.2 场地变化轴（2 套变体，不改碰撞系统）
 
-复用现有 `registerSolid` 自登记机制——**布局即数据**：
+复用现有 `registerSolid` 自登记机制——**布局即数据**（M2 落地：预设对象 `LAYOUTS` 在 js/config/levels.js，`applyLayout` 每次 startGame 清场重建）：
 
-- **变体 A「野区窄道」**：中路加 2 道横隔断，形成 3 条宽 2.5-4m 的走廊。⚠️ 走廊净宽必须 ≥0.8m 玩家直径 + 转弯余量（遵守现有间距约束，`registerSolid` 的 warn 会在摆放阶段拦截）。
-- **变体 B「开阔祭坛」**：撤掉中央隔断，柱阵改为 2×3 对称双柱阵（精英/Boss 战风筝位）。
-- **配置格式**：每关一个 `obstacles: [{type:'divider'|'pillar', x, z, w, d, h}, ...]` 数组，加载关卡时清场重建。
-- **Edge case**：重建时必须同步清空 `solidObstacles` 并释放旧 geometry/material（与 `removeMonster` 释放约定同级）。
+- **变体 A「野区窄道」**：default 全量（2 纵隔断 + 7 柱）+ 中路 2 道错位横隔断（dir:'h'，厚 0.3×高 1.8）：
+  H1 `(x=-1.5, z=-14, len 12.7)` 左端贴齐西纵隔断内侧面（x=-7.85），右侧留 **3.0m 窄口**；
+  H2 `(x=1.5, z=-26, len 12.7)` 右端贴齐东纵隔断，左侧留 **3.0m 窄口**。
+  **S 形窄道决策记录（M2）**：原文「3 条宽 2.5-4m 走廊」几何上无法由 2 道隔断字面产出，经确认采用 S 形窄道 interpretation——中路 S 形推进（2 处 3m 窄口）+ 左右 18m 宽侧翼可绕行但空旷暴露，贴合 L3「窄位拉扯」教学点（P1）。
+- **变体 B「开阔祭坛」**：撤隔断，柱阵改 2×3 对称双柱阵（x=±10，z∈{-10,-24,-38}，精英/Boss 战风筝位）= 6 个碰撞障碍。
+- **配置格式**：关卡行 `layout` 引用 `LAYOUTS` 预设名；预设内为 `[{type:'divider', x, z, len, dir:'v'|'h'} | {type:'pillar', x, z}]` descriptor 数组，加载关卡时清场重建（`applyLayout`）。schema 校验 `validateLayout`：AABB 出界 / 出生点 (0,2) 净空 0.8m / 两两间距 <0.8m 均为配置错误（esm-lint 常驻）。
+- **Edge case**：重建时必须同步清空 `solidObstacles` 并释放旧 geometry/material（与 `removeMonster` 释放约定同级）——level-probe「回 L1 =9」为无残留回归用例。
 
 ### 5.3 新怪种轴（3 种，全部程序化建模，零外部素材）
 
@@ -353,7 +356,7 @@ const LEVELS = [
 | M0 | Paper review + 命中率/爆头率标定（`__SNAPSHOT__` 跑 3 局校准 §2 两个 ⚗️ 假设） | 校准后的血池缩放系数 + 数值表 | 0.5 天 | — | 若标定结果触发 §10 A 级"血池重算"信号，追加 0.5 天数值 pass（不动 milestone 拓扑，占 M6 缓冲） |
 | M0.5 | 架构拆分（§8.0：levels/weapons/monsters/save 四文件）+ 散布/后坐常量迁入武器表 | 行为不变的四文件结构，既有测试全绿 | 1 天 | M0 | |
 | M1 | 元循环骨架：`LEVELS` 配置 + 线性解锁 + localStorage + 选关 UI + S/A/B/F 评级（L1-L5 纯数值递增版） | 可完整闯关的骨架 | 1 天 | M0.5 | |
-| M2 | 场地变体 A/B + 布局配置化 + 清场测试 | 3 套场地 | 0.5 天 | M1 | |
+| M2 | 场地变体 A/B + 布局配置化 + 清场测试 | 3 套场地 | 0.5 天 | M1 | ✅ 已完成（LAYOUTS 预设 + applyLayout + validateLayout + probe 无残留用例） |
 | M3 | 迅捷蟹 + 精英石像（AI/模型/平衡） | L4/L5 完整版 | 3 天 | M0.5（怪种工厂需先拆出）+ M2（L4/L5 需变体 A/B 场地） | |
 | M4 | 切枪框架 + 霰弹 + 射手步枪 + 音效登记 | 3 武器 | 1 天 | M0.5（武器表字段化是切枪前提） | |
 | M5a | Boss 三阶段 AI + 转场机制（无敌/吼叫震屏/回血）+ 通用震屏触发器解耦 | L7 Boss 可战 + 通用震屏触发器 API（triggerShake(intensity, duration)，替换现有硬编码调用） | 3.5 天 | M3（Boss 召唤蟹复用蟹工厂）+ M4（射手步枪对 Boss） | |
