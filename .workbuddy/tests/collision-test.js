@@ -18,6 +18,9 @@ if (!fnMatch) { console.log('抽不到 resolveObstacleCollisions'); process.exit
 // resolveObstacleCollisions 现在委托给 pushCircleOutOfObstacles，必须先拼进来
 const helperMatch = SRC.match(/function pushCircleOutOfObstacles\([\s\S]*?\n\}/);
 if (!helperMatch) { console.log('抽不到 pushCircleOutOfObstacles'); process.exit(1); }
+// 怪物间软分离（M3 补丁）：内部调用 resolveObstacleCollisions，必须拼在其后
+const sepMatch = SRC.match(/function resolveMonsterSeparations\(list\) \{[\s\S]*?\n\}/);
+if (!sepMatch) { console.log('抽不到 resolveMonsterSeparations'); process.exit(1); }
 const grab = (name) => {
   const m = SRC.match(new RegExp('^const ' + name + ' = ([^;]+);', 'm'));
   if (!m) { console.log('抽不到常量 ' + name); process.exit(1); }
@@ -32,7 +35,8 @@ const build = new Function('obstacles',
   'const solidObstacles = obstacles;\n' +
   helperMatch[0] + '\n' +
   fnMatch[0] + '\n' +
-  'return { resolveObstacleCollisions, PLAYER_RADIUS, COLLISION_ITERATIONS, MONSTER_RADIUS };'
+  sepMatch[0] + '\n' +
+  'return { resolveObstacleCollisions, resolveMonsterSeparations, PLAYER_RADIUS, COLLISION_ITERATIONS, MONSTER_RADIUS };'
 );
 
 const R = build([]).PLAYER_RADIUS;
@@ -179,6 +183,47 @@ console.log('=== 组 9：反向对照 ===');
   const pushed = noop(p);
   ok(distTo(p, obs[0]) < R - 1e-6, '空实现确实会被「推出到相切」断言拒绝', distTo(p, obs[0]).toFixed(4));
   ok(pushed === false, '空实现也不会声称推出过');
+}
+
+console.log('=== 组 10：怪物间软分离（M3 补丁，修复野怪重叠）===');
+{
+  const api = build([]);
+  const mon = (x, z, r, dying) => ({ position: { x, y: 0, z }, userData: { radius: r, dying: !!dying } });
+  const dist = (a, b) => Math.hypot(a.position.x - b.position.x, a.position.z - b.position.z);
+
+  // 1. 两只重叠红怪（圆心距 1m < 1.3）→ 分离后 ≥ 半径和
+  const pair = [mon(0, 0, 0.65), mon(1, 0, 0.65)];
+  api.resolveMonsterSeparations(pair);
+  ok(dist(pair[0], pair[1]) >= 1.3 - 1e-9, '重叠红怪分离到 ≥ 半径和 1.3m', dist(pair[0], pair[1]).toFixed(3));
+  ok(Math.abs(pair[0].position.x - (-0.15)) < 1e-9, '对称各推一半（-0.15）', pair[0].position.x.toFixed(4));
+
+  // 2. 完全重合 → 沿 +X 拆开，不挂死
+  const same = [mon(3, 3, 0.65), mon(3, 3, 0.65)];
+  api.resolveMonsterSeparations(same);
+  ok(dist(same[0], same[1]) >= 1.3 - 1e-9, '完全重合也能拆开', dist(same[0], same[1]).toFixed(3));
+
+  // 3. 濒死怪不参与（尸体可穿，不推活怪）
+  const dyingPair = [mon(0, 0, 0.65, true), mon(0.5, 0, 0.65)];
+  api.resolveMonsterSeparations(dyingPair);
+  ok(dyingPair[1].position.x === 0.5 && dyingPair[1].position.z === 0, '濒死怪不推活怪', JSON.stringify(dyingPair[1].position));
+
+  // 4. 蟹（0.35）+ 红怪（0.65）：最小圆心距 1.0，与同族不同
+  const mixed = [mon(0, 0, 0.35), mon(0.6, 0, 0.65)];
+  api.resolveMonsterSeparations(mixed);
+  ok(dist(mixed[0], mixed[1]) >= 1.0 - 1e-9, '蟹+红怪分离到 ≥ 1.0m（半径异构）', dist(mixed[0], mixed[1]).toFixed(3));
+
+  // 5. 分离不被推进墙：障碍旁的重叠对，分离后双双在障碍外
+  const obs = [box(0, 0, 1.2, 1.2, 3)];
+  const api2 = build(obs);
+  const nearWall = [mon(1.0, 0.2, 0.65), mon(0.9, -0.3, 0.65)];   // 圆心已在障碍 0.4m 推出线附近
+  api2.resolveMonsterSeparations(nearWall);
+  const allOut = nearWall.every(m => distTo(m.position, obs[0]) >= 0.65 - 1e-6);
+  ok(allOut, '分离 + 障碍解算后无人在墙内', nearWall.map(m => distTo(m.position, obs[0]).toFixed(3)).join(','));
+
+  // 6. 不重叠时零位移（不误伤正常站位）
+  const apart = [mon(-5, 0, 0.65), mon(5, 0, 0.65)];
+  api.resolveMonsterSeparations(apart);
+  ok(apart[0].position.x === -5 && apart[1].position.x === 5, '不重叠时零位移', JSON.stringify(apart.map(m => m.position.x)));
 }
 
 console.log('');

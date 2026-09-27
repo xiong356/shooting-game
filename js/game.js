@@ -3225,6 +3225,9 @@ function updateMonsters(dt) {
     }
   }
 
+  // 怪物间软分离：追同一点会挤成一团穿模（每帧一对检查，几帧内化解）
+  resolveMonsterSeparations(monsters);
+
   // 血条扣血缓动（只重绘 animating 的血条，静止零开销）
   updateHealthBarAnimations(monsters, dt);
 }
@@ -3267,6 +3270,45 @@ const HURT_FLASH_LOW_BASE = 0.35;  // 低血（<40%）红闪持续底值上限
 function resetMeleePose(ud) {
   if (ud.bodyPivot) ud.bodyPivot.rotation.x = 0;
   if (ud.armR) ud.armR.rotation.x = 0;
+}
+
+/**
+ * 怪物间软分离（M3 补丁）：野怪追同一个点（玩家）且相互无碰撞体，会挤成一团穿模。
+ * 逐对圆-圆检查，重叠时沿分离轴各推一半；推出后各自再对障碍解算一次，防止被推进墙里。
+ * 濒死怪不参与（死亡动画是放大淡出，尸体可穿）。每帧跑一遍，重叠在几帧内自然化解（软分离，不抖）。
+ * 抽成 list 参数的纯函数供 collision-test 离线验收。
+ */
+function resolveMonsterSeparations(list) {
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    if (a.userData.dying) continue;
+    for (let j = i + 1; j < list.length; j++) {
+      const b = list[j];
+      if (b.userData.dying) continue;
+      const ra = a.userData.radius ?? MONSTER_RADIUS;
+      const rb = b.userData.radius ?? MONSTER_RADIUS;
+      const minDist = ra + rb;
+      let dx = b.position.x - a.position.x;
+      let dz = b.position.z - a.position.z;
+      let d = Math.hypot(dx, dz);
+      if (d >= minDist) continue;
+      if (d < 1e-6) {
+        // 完全重合：沿 +X 直接摆到 ±minDist/2（沿分离轴的常规推出在 d=0 处无方向可算）
+        a.position.x -= minDist / 2;
+        b.position.x += minDist / 2;
+        resolveObstacleCollisions(a.position, ra);
+        resolveObstacleCollisions(b.position, rb);
+        continue;
+      }
+      const push = (minDist - d) / d * 0.5;
+      a.position.x -= dx * push;
+      a.position.z -= dz * push;
+      b.position.x += dx * push;
+      b.position.z += dz * push;
+      resolveObstacleCollisions(a.position, ra);
+      resolveObstacleCollisions(b.position, rb);
+    }
+  }
 }
 
 /**
