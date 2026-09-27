@@ -244,7 +244,7 @@ function buildBuffModel(palette, barColor, groupLabel, gemRadius = 0.25) {
       c.userData.originalColor = c.material.color.clone();
     }
   });
-  return { group, gem };
+  return { group, gem, healthBar };
 }
 
 /** 石像调色板公共基座：身体/四肢/肩甲/暗色按阵营染色，魔纹与宝石由精英覆写为紫。 */
@@ -262,7 +262,7 @@ function buffPalette(base) {
 
 /** 构建猩红石像 (Red Buff) */
 function createRedBuff() {
-  const { group, gem } = buildBuffModel(buffPalette({
+  const { group, gem, healthBar } = buildBuffModel(buffPalette({
     body: '#cc1a1a', bodyEmissive: '#330000',
     limbs: '#991111', limbsEmissive: '#220000',
     shoulder: '#ff2222', shoulderEmissive: '#550000',
@@ -270,13 +270,13 @@ function createRedBuff() {
     gem: '#ff2200', gemEmissive: '#ff2200',
     rune: '#ff6633', runeEmissive: '#ff3300',
   }), '#ff3b3b', 'redBuff');
-  group.userData = { type: 'red', gem, bodyColor: '#cc1a1a', maxHealth: 150 };
+  group.userData = { type: 'red', gem, bodyColor: '#cc1a1a', maxHealth: 150, healthBar };
   return group;
 }
 
 /** 构建蔚蓝石像 (Blue Buff) */
 function createBlueBuff() {
-  const { group, gem } = buildBuffModel(buffPalette({
+  const { group, gem, healthBar } = buildBuffModel(buffPalette({
     body: '#1a4dcc', bodyEmissive: '#000833',
     limbs: '#113a99', limbsEmissive: '#000622',
     shoulder: '#2266ff', shoulderEmissive: '#001555',
@@ -284,7 +284,7 @@ function createBlueBuff() {
     gem: '#0066ff', gemEmissive: '#0066ff',
     rune: '#3399ff', runeEmissive: '#0066ff',
   }), '#3b8cff', 'blueBuff');
-  group.userData = { type: 'blue', gem, bodyColor: '#1a4dcc', maxHealth: 100 };
+  group.userData = { type: 'blue', gem, bodyColor: '#1a4dcc', maxHealth: 100, healthBar };
   return group;
 }
 
@@ -293,7 +293,7 @@ function createBlueBuff() {
  * 行为完全复用红/蓝状态机（数值差异走 MONSTER_SPECS + createMonster）。
  */
 function createEliteRedBuff() {
-  const { group, gem } = buildBuffModel(buffPalette({
+  const { group, gem, healthBar } = buildBuffModel(buffPalette({
     body: '#cc1a1a', bodyEmissive: '#330000',
     limbs: '#991111', limbsEmissive: '#220000',
     shoulder: '#ff2222', shoulderEmissive: '#550000',
@@ -301,12 +301,12 @@ function createEliteRedBuff() {
     gem: '#8b5cf6', gemEmissive: '#7c3aed',   // 宝石紫（宝石=能量核心，精英的辨识主色）
     rune: '#a855f7', runeEmissive: '#7c3aed', // 魔纹紫
   }), '#ff3b3b', 'eliteRedBuff', 0.33);
-  group.userData = { type: 'eliteRed', gem, bodyColor: '#cc1a1a', maxHealth: 300 };
+  group.userData = { type: 'eliteRed', gem, bodyColor: '#cc1a1a', maxHealth: 300, healthBar };
   return group;
 }
 
 function createEliteBlueBuff() {
-  const { group, gem } = buildBuffModel(buffPalette({
+  const { group, gem, healthBar } = buildBuffModel(buffPalette({
     body: '#1a4dcc', bodyEmissive: '#000833',
     limbs: '#113a99', limbsEmissive: '#000622',
     shoulder: '#2266ff', shoulderEmissive: '#001555',
@@ -314,7 +314,7 @@ function createEliteBlueBuff() {
     gem: '#8b5cf6', gemEmissive: '#7c3aed',
     rune: '#a855f7', runeEmissive: '#7c3aed',
   }), '#3b8cff', 'eliteBlueBuff', 0.33);
-  group.userData = { type: 'eliteBlue', gem, bodyColor: '#1a4dcc', maxHealth: 220 };
+  group.userData = { type: 'eliteBlue', gem, bodyColor: '#1a4dcc', maxHealth: 220, healthBar };
   return group;
 }
 
@@ -433,9 +433,12 @@ export function createMonster(type, mul = {}) {
   }
   group.add(bodyPivot);
   group.userData.bodyPivot = bodyPivot;
-  // 攻击动画要转手臂，缓存引用省得每帧 getObjectByName
+  // 攻击动画要转手臂，缓存引用省得每帧 getObjectByName（蟹无手臂，为 null——蟹动画只用 bodyPivot）
   group.userData.armL = group.getObjectByName('armL');
   group.userData.armR = group.getObjectByName('armR');
+  // 防御性重链：血条必须挂 userData（bodyPivot 组装排除它 + spawnMonsters 首绘 /
+  // damageMonster 扣血 / killMonster 隐藏都经此引用）。M3① 重构曾漏挂导致血条全灭。
+  group.userData.healthBar = group.getObjectByName('healthBar');
 
   return group;
 }

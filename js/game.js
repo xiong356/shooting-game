@@ -708,7 +708,7 @@ function spawnMonsters(composition, mul) {
       crabState: 'rush',
       crabT: 0,
       pounceCooldown: 0,
-      heading: Math.random() * Math.PI * 2,   // 初始朝向随机（贴地蟹无 lookAt 朝向约束）
+      crabHeading: Math.random() * Math.PI * 2,   // 初始朝向随机；蟹面向 heading 不 lookAt（转向钝可见）
       lungeX: 0,
       lungeZ: 0,
         // ---- 攻击状态机（红近战 / 蓝远程，见 MONSTER ATTACK 区块）----
@@ -3432,14 +3432,19 @@ function stepCrabChase(pos, ud, playerX, playerZ, dt) {
     return;
   }
 
-  // rush：heading 朝玩家 bearing 旋转（限速）
+  // rush：heading 朝玩家 bearing 旋转（限速）。转向始终允许（贴脸甩头也是行为的一部分），
+  // 但推进有 stopDist 门控——蟹没有与玩家的碰撞体，不停步会直接走进玩家相机
+  // （越过近裁剪面 → 实机「走近就消失」，2026-09-27 修复）
   const dx = playerX - pos.x;
   const dz = playerZ - pos.z;
+  const distNow = Math.hypot(dx, dz);
   let diff = Math.atan2(dx, dz) - ud.crabHeading;
   while (diff > Math.PI) diff -= Math.PI * 2;
   while (diff < -Math.PI) diff += Math.PI * 2;
   const maxTurn = CRAB_TURN_RATE * dt;
   ud.crabHeading += Math.max(-maxTurn, Math.min(maxTurn, diff));
+
+  if (distNow <= ud.stopDist) return;   // 已贴脸：保持距离，把扑击交给 updateCrab
 
   // 排斥力叠加（障碍最近点 → 蟹心 方向）
   let ax = 0, az = 0;
@@ -3505,9 +3510,13 @@ function updateCrab(monster, ud, dist, dt) {
 
   if (ud.crabState === 'lunge') {
     ud.crabT += dt;
-    // 锁定方向扑出，首帧判伤（之后扑程内不重复判）
-    monster.position.x += ud.lungeX * CRAB_POUNCE_SPEED * dt;
-    monster.position.z += ud.lungeZ * CRAB_POUNCE_SPEED * dt;
+    // 锁定方向扑出，首帧判伤（之后扑程内不重复判）。
+    // 扑程不穿越玩家：蟹没有与玩家的碰撞体，贴到 0.7m 为止（否则冲进相机 → 贴脸消失）
+    const distNow = Math.hypot(monster.position.x - playerPosition.x, monster.position.z - playerPosition.z);
+    const raw = CRAB_POUNCE_SPEED * dt;
+    const stepLen = Math.max(0, Math.min(raw, distNow - 0.7));
+    monster.position.x += ud.lungeX * stepLen;
+    monster.position.z += ud.lungeZ * stepLen;
     if (ud.bodyPivot) ud.bodyPivot.rotation.x = CRAB_LEAN_LUNGE;
     resolveObstacleCollisions(monster.position, ud.radius);
 
