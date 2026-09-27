@@ -71,6 +71,11 @@ const ok = (cond, label, extra) => {
   const booted = await evalJS('window.__GAME_BOOTED__ === true');
   ok(booted === true, '游戏启动（__GAME_BOOTED__）');
 
+  // 探针可重复：清掉 profile 残留的存档（cdp-level 目录跨次运行复用），重载后从零开始
+  await evalJS("localStorage.removeItem('wk.pve.save.v1'); localStorage.removeItem('wk.pve.save.v1.backup')");
+  await send('Page.reload');
+  await sleep(7000);
+
   // ---- 1. L1 组成刷怪（红×4）----
   await evalJS('window.__SNAPSHOT__.loadLevel(1)');
   await sleep(800);
@@ -104,6 +109,21 @@ const ok = (cond, label, extra) => {
   await sleep(7000);
   const afterReload = await evalJS('JSON.stringify(window.__SNAPSHOT__.saveRead().save)').then(s => JSON.parse(s));
   ok(afterReload.unlocked === 2 && afterReload.levels['1'], '刷新后进度仍在（localStorage 持久化）', afterReload);
+
+  // ---- 3b. 场地重建：切关障碍数变化 + 清场无残留（§9「场地重建×碰撞」风险行）----
+  await evalJS('window.__SNAPSHOT__.loadLevel(3)');
+  await sleep(500);
+  const l3 = await evalJS(`JSON.stringify({ layout: window.__SNAPSHOT__().layout, count: window.__SNAPSHOT__().obstacleCount, obs: window.__SNAPSHOT__.obstacles() })`).then(s => JSON.parse(s));
+  ok(l3.layout === 'variantA' && l3.count === 11, 'L3 切 variantA：11 障碍', { layout: l3.layout, count: l3.count });
+  ok(l3.obs.some(o => (o.maxX - o.minX) > 12 && (o.maxZ - o.minZ) < 0.5), 'variantA 含 12.7m 横隔断 AABB');
+  await evalJS('window.__SNAPSHOT__.loadLevel(5)');
+  await sleep(500);
+  const l5 = await evalJS(`JSON.stringify({ layout: window.__SNAPSHOT__().layout, count: window.__SNAPSHOT__().obstacleCount, obs: window.__SNAPSHOT__.obstacles() })`).then(s => JSON.parse(s));
+  ok(l5.layout === 'variantB' && l5.count === 6 && l5.obs.every(o => (o.maxX - o.minX) < 1.3 && (o.maxZ - o.minZ) < 1.3), 'L5 切 variantB：6 柱无隔断', { layout: l5.layout, count: l5.count });
+  await evalJS('window.__SNAPSHOT__.loadLevel(1)');
+  await sleep(500);
+  const l1b = await evalJS(`JSON.stringify({ layout: window.__SNAPSHOT__().layout, count: window.__SNAPSHOT__().obstacleCount })`).then(s => JSON.parse(s));
+  ok(l1b.layout === 'default' && l1b.count === 9, '回 L1 = 9（清场无残留，旧碰撞盒不成隐形墙）', l1b);
 
   // ---- 4. 阵亡路径：L2 挂机等死 → F + 不写盘 ----
   let engaged = false;

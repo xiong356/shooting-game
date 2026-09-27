@@ -182,6 +182,35 @@ async function freshModule(relPath, tag, initialStorage) {
     }
   }
 
+  console.log('=== 组 10：场地布局预设（M2 §5.2 布局即数据）===');
+  {
+    ok(typeof L.validateLayout === 'function' && typeof L.layoutAABB === 'function', 'levels.js 导出 validateLayout/layoutAABB');
+    for (const name of Object.keys(L.LAYOUTS)) {
+      const errs = L.validateLayout(L.LAYOUTS[name]);
+      ok(errs.length === 0, 'LAYOUTS.' + name + ' 过 validateLayout', errs);
+    }
+    ok(L.LAYOUTS.default.length === 9 && L.LAYOUTS.variantA.length === 11 && L.LAYOUTS.variantB.length === 6,
+      '预设障碍数 9/11/6（§2 基线 + S形窄道 + 双柱阵）', [L.LAYOUTS.default.length, L.LAYOUTS.variantA.length, L.LAYOUTS.variantB.length]);
+
+    // variantA S 形窄口：H1 右口 / H2 左口，均 3.0m ±0.05（对照 ±8 纵隔断内侧面，非 magic number）
+    const hDivs = L.LAYOUTS.variantA.filter(o => o.type === 'divider' && o.dir === 'h');
+    ok(hDivs.length === 2, 'variantA 含 2 道横隔断', hDivs.length);
+    const eastInner = L.layoutAABB(L.LAYOUTS.variantA.find(o => o.type === 'divider' && o.dir === 'v' && o.x > 0)).minX;
+    const westInner = L.layoutAABB(L.LAYOUTS.variantA.find(o => o.type === 'divider' && o.dir === 'v' && o.x < 0)).maxX;
+    const [hLeft, hRight] = hDivs.map(L.layoutAABB).sort((p, q) => p.maxX - q.maxX);
+    const gapA = eastInner - hLeft.maxX;    // H1 右端 → 东隔断内侧面
+    const gapB = hRight.minX - westInner;   // 西隔断内侧面 → H2 左端
+    ok(Math.abs(gapA - 3.0) <= 0.05 && Math.abs(gapB - 3.0) <= 0.05, 'S 形窄口均 3.0m ±0.05（§5.2 走廊 2.5-4m 带内）', [gapA, gapB]);
+
+    // 关卡行引用（§4 场地列）
+    const layoutOf = id => L.LEVELS[id - 1].layout;
+    ok(layoutOf(1) === 'default' && layoutOf(2) === 'default', 'L1/L2 → default');
+    ok(layoutOf(3) === 'variantA' && layoutOf(4) === 'variantA', 'L3/L4 → variantA');
+    ok(layoutOf(5) === 'variantB', 'L5 → variantB');
+    // 薄隔断推挤覆盖说明：0.3m 薄墙的圆推出/贴墙滑行已由 collision-test 组 7「真实场地坐标」覆盖
+    // （default 两道 0.3m 纵隔断）；横放仅旋转向、数学同路，不重复建组。
+  }
+
   console.log('');
   console.log('结果: ' + pass + ' 通过 / ' + fail + ' 失败');
   process.exit(fail > 0 ? 1 : 0);
