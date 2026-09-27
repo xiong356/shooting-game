@@ -4,7 +4,7 @@
 // M1①：L1-L5 数据填入（§11 路线图 M1 =「L1-L5 纯数值递增版」）。
 //   - L4/L5 的蟹/精英怪 M3 才实现，暂用红蓝替身（血池对齐见各行注释），M3 换回真身；
 //   - L6/L7 M5b/M5a 才实现，届时按 §4 总表追加行（id 自动连续）；
-//   - layout M1 全部 'default'，M2③ 按 §4 场地列切关（L3/L4→variantA，L5→variantB）；
+//   - layout 已按 §4 场地列落地（M2③）：L1/L2 default，L3/L4 variantA（野区窄道），L5 variantB（开阔祭坛）；
 //   - reward.weapon（L3 霰弹枪 / L5 射手步枪）M4 切枪框架落地后补入。
 // 静态校验：esm-lint 对本表常驻跑 validateLevels + 逐预设 validateLayout（§8.1）。
 
@@ -30,13 +30,13 @@ export const LEVELS = [
     spawns: [{ type: 'red', count: 3 }, { type: 'blue', count: 3 }], layout: 'default',
     parTime: 48, maxAlive: 8, reward: { unlock: 3 } },
   { id: 3, name: '野区窄道', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
-    spawns: [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }], layout: 'default',
+    spawns: [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }], layout: 'variantA',
     parTime: 63, maxAlive: 8, reward: { unlock: 4 } },   // weapon:'shotgun' M4 补入（§4 L3 通关奖励）
   { id: 4, name: '蟹群来袭', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
-    spawns: [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }], layout: 'default',
+    spawns: [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }], layout: 'variantA',
     parTime: 65, maxAlive: 8, reward: { unlock: 5 } },   // M3 替换为 crab×4 red×3 blue×2
   { id: 5, name: '暗影先锋', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
-    spawns: [{ type: 'red', count: 5 }, { type: 'blue', count: 3 }], layout: 'default',
+    spawns: [{ type: 'red', count: 5 }, { type: 'blue', count: 3 }], layout: 'variantB',
     parTime: 74, maxAlive: 8, reward: { unlock: 6 } },   // M3 替换为 eliteRed×1 red×3 blue×3
 ];
 
