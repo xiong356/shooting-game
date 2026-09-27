@@ -17,7 +17,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS } from './config/weapons.js';
-import { LEVELS, HP_CALIB_MUL, gradeFor } from './config/levels.js';
+import { LEVELS, HP_CALIB_MUL, LAYOUTS, gradeFor } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
 import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged, unlockAll } from './save.js';
 
@@ -71,6 +71,7 @@ const state = {
   status: 'menu', // 'menu' | 'playing' | 'paused' | 'ended'
   currentLevelId: 1,   // 当前关（LEVELS[id-1]）；选关/继续游戏/重开时设定（M1③）
   levelStartTime: 0,   // 本局开始时刻（performance.now()，§6 评级时间门基准）
+  currentLayout: 'default',   // 当前场地布局预设名（M2②，__SNAPSHOT__.layout 消费）
   maxAmmo: AK.magSize,
   currentAmmo: AK.magSize,
   reloading: false,
@@ -350,41 +351,8 @@ function createEnvironment() {
   // Front wall: Z=13, spans X from -27 to 27
   env.add(createWall(56, 5, 0.8, 0, 13));
 
-  // --- Shooting Lane Dividers ---
-  function createDivider(x, z, length = 12) {
-    const group = new THREE.Group();
-    const geo = new THREE.BoxGeometry(0.3, 1.8, length);
-    registerSolid(x, z, 0.3, length, 1.8);   // 碰撞体随几何体一起登记
-    const mat = new THREE.MeshStandardMaterial({
-      color: '#444455',
-      roughness: 0.5,
-      metalness: 0.3,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.y = 0.9;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    group.add(mesh);
-
-    // Top accent
-    const topGeo = new THREE.BoxGeometry(0.35, 0.06, length + 0.2);
-    const topMat = new THREE.MeshStandardMaterial({
-      color: '#00d4ff',
-      roughness: 0.3,
-      metalness: 0.5,
-      emissive: '#00d4ff',
-      emissiveIntensity: 0.2,
-    });
-    const top = new THREE.Mesh(topGeo, topMat);
-    top.position.y = 1.8;
-    group.add(top);
-
-    group.position.set(x, 0, z);
-    return group;
-  }
-
-  env.add(createDivider(-8, -4, 14));
-  env.add(createDivider(8, -4, 14));
+  // 障碍物（隔断/柱）M2② 迁出：随关卡布局由 applyLayout 重建（§5.2 布局即数据），
+  // 本函数只建跨布局不变的基础层（地面/平台/标记/边界墙，墙不入 solidObstacles）。
 
   // --- Distance Markers ---
   function createDistanceMarker(z, label) {
@@ -412,47 +380,118 @@ function createEnvironment() {
   env.add(createDistanceMarker(-30));
   env.add(createDistanceMarker(-40));
 
-  // --- Cover Pillars ---
-  function createPillar(x, z) {
-    const group = new THREE.Group();
-    const geo = new THREE.BoxGeometry(1.2, 3, 1.2);
-    registerSolid(x, z, 1.2, 1.2, 3);   // 碰撞体随几何体一起登记
-    const mat = new THREE.MeshStandardMaterial({
-      color: '#4a4a58',
-      roughness: 0.5,
-      metalness: 0.4,
-    });
-    const pillar = new THREE.Mesh(geo, mat);
-    pillar.position.y = 1.5;
-    pillar.castShadow = true;
-    pillar.receiveShadow = true;
-    group.add(pillar);
-
-    // Accent stripe
-    const stripeGeo = new THREE.BoxGeometry(1.3, 0.2, 1.3);
-    const stripeMat = new THREE.MeshStandardMaterial({
-      color: '#00d4ff',
-      roughness: 0.3,
-      emissive: '#00d4ff',
-      emissiveIntensity: 0.15,
-    });
-    const stripe = new THREE.Mesh(stripeGeo, stripeMat);
-    stripe.position.y = 2;
-    group.add(stripe);
-
-    group.position.set(x, 0, z);
-    return group;
-  }
-
-  env.add(createPillar(-15, -12));
-  env.add(createPillar(15, -12));
-  env.add(createPillar(-15, -28));
-  env.add(createPillar(15, -28));
-  env.add(createPillar(0, -35));
-  env.add(createPillar(-20, -40));
-  env.add(createPillar(20, -40));
-
   return env;
+}
+
+// ============================================
+// 场地布局（M2② §5.2 布局即数据：障碍组随关卡重建）
+// ============================================
+
+/** 纵/横隔断。dir 'v' = 沿 Z（现状），'h' = 沿 X。碰撞体随几何体一起登记（registerSolid）。 */
+function createDivider(x, z, length = 12, dir = 'v') {
+  const group = new THREE.Group();
+  const geo = dir === 'h'
+    ? new THREE.BoxGeometry(length, 1.8, 0.3)
+    : new THREE.BoxGeometry(0.3, 1.8, length);
+  if (dir === 'h') registerSolid(x, z, length, 0.3, 1.8);
+  else registerSolid(x, z, 0.3, length, 1.8);
+  const mat = new THREE.MeshStandardMaterial({
+    color: '#444455',
+    roughness: 0.5,
+    metalness: 0.3,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.y = 0.9;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+
+  // Top accent
+  const topGeo = dir === 'h'
+    ? new THREE.BoxGeometry(length + 0.2, 0.06, 0.35)
+    : new THREE.BoxGeometry(0.35, 0.06, length + 0.2);
+  const topMat = new THREE.MeshStandardMaterial({
+    color: '#00d4ff',
+    roughness: 0.3,
+    metalness: 0.5,
+    emissive: '#00d4ff',
+    emissiveIntensity: 0.2,
+  });
+  const top = new THREE.Mesh(topGeo, topMat);
+  top.position.y = 1.8;
+  group.add(top);
+
+  group.position.set(x, 0, z);
+  return group;
+}
+
+/** 掩体柱（1.2×1.2 底、高 3） */
+function createPillar(x, z) {
+  const group = new THREE.Group();
+  const geo = new THREE.BoxGeometry(1.2, 3, 1.2);
+  registerSolid(x, z, 1.2, 1.2, 3);   // 碰撞体随几何体一起登记
+  const mat = new THREE.MeshStandardMaterial({
+    color: '#4a4a58',
+    roughness: 0.5,
+    metalness: 0.4,
+  });
+  const pillar = new THREE.Mesh(geo, mat);
+  pillar.position.y = 1.5;
+  pillar.castShadow = true;
+  pillar.receiveShadow = true;
+  group.add(pillar);
+
+  // Accent stripe
+  const stripeGeo = new THREE.BoxGeometry(1.3, 0.2, 1.3);
+  const stripeMat = new THREE.MeshStandardMaterial({
+    color: '#00d4ff',
+    roughness: 0.3,
+    emissive: '#00d4ff',
+    emissiveIntensity: 0.15,
+  });
+  const stripe = new THREE.Mesh(stripeGeo, stripeMat);
+  stripe.position.y = 2;
+  group.add(stripe);
+
+  group.position.set(x, 0, z);
+  return group;
+}
+
+let obstacleGroup = null;
+let currentLayoutName = null;
+
+/**
+ * 清场重建障碍组（§5.2 / §9 场地重建×碰撞风险行）。
+ * 旧障碍组整体 remove + traverse dispose（removeMonster 同款释放范式），
+ * solidObstacles 同步清空——不清就是「旧碰撞盒残留成隐形墙」，level-probe 有无残留回归用例。
+ * 每次 startGame 都全量重建（§9 重开 = 配置重读；保证 solidObstacles ≡ 当前布局的不变量）。
+ */
+function applyLayout(name) {
+  if (!LAYOUTS[name]) {
+    console.warn('未知布局预设: ' + name + '，回退 default');
+    name = 'default';
+  }
+  if (obstacleGroup) {
+    scene.remove(obstacleGroup);
+    obstacleGroup.traverse(c => {
+      if (c.geometry) c.geometry.dispose();
+      const mats = c.material ? (Array.isArray(c.material) ? c.material : [c.material]) : [];
+      mats.forEach(m => {
+        if (m.map) m.map.dispose();
+        m.dispose();
+      });
+    });
+    obstacleGroup = null;
+  }
+  solidObstacles.length = 0;
+  obstacleGroup = new THREE.Group();
+  for (const o of LAYOUTS[name]) {
+    if (o.type === 'divider') obstacleGroup.add(createDivider(o.x, o.z, o.len, o.dir));
+    else if (o.type === 'pillar') obstacleGroup.add(createPillar(o.x, o.z));
+  }
+  scene.add(obstacleGroup);
+  currentLayoutName = name;
+  state.currentLayout = name;
 }
 
 // ============================================
@@ -3442,6 +3481,8 @@ function startGame(levelId) {
     t.material.dispose();
   });
   bulletTrails.length = 0;
+  // 场地按关卡布局重建（§5.2 布局即数据；先重建再刷怪）
+  applyLayout(lv.layout);
   // 关卡组成刷怪：§4 spawns × §5.1 关卡倍率 × §2 全局血池校准 k（仅 L1-L6 吃 k，Boss 关 M5a 另算）
   spawnMonsters(lv.spawns, { hp: lv.hpMul * HP_CALIB_MUL, spd: lv.spdMul });
 
@@ -3639,6 +3680,7 @@ function abandonLevel() {
     t.material.dispose();
   });
   bulletTrails.length = 0;
+  applyLayout('default');   // 菜单背景回默认布局（§5.2）
   spawnMonsters(MENU_COMPOSITION);
   // 相机回菜单机位（updateCamera 在 menu 态不跑，停留在对局位会穿模）
   camera.position.set(0, 6, 8);
@@ -3819,6 +3861,7 @@ function init() {
   // Create scene components
   createLighting();
   createEnvironment();
+  applyLayout('default');   // 菜单背景障碍组（M2②：障碍随布局重建，基础层单例）
 
   // CRITICAL: camera must be in scene graph for children (weapon) to render
   scene.add(camera);
@@ -3980,6 +4023,7 @@ window.__SNAPSHOT__ = () => ({
   footstepLog: footstepLog.slice(),
   footstepCount,   // 单调递增，不受 FOOTSTEP_LOG_MAX 截断影响
   obstacleCount: solidObstacles.length,   // 已登记的实体障碍数（碰撞体与几何体同步）
+  layout: currentLayoutName,              // 当前布局预设名（M2② probe 断言用）
   // 野怪位置与绕行状态，供自动化验证「不穿墙 / 不卡死」
   monsters: monsters.filter(m => !m.userData.dying).map(m => ({
     id: m.userData.id,
