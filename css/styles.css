@@ -258,6 +258,11 @@ html, body {
   color: var(--accent-blue);
 }
 
+/* 迅捷蟹标签（M3③）：琥珀金与蟹壳同系 */
+.monster-label.crab {
+  color: #ffb347;
+}
+
 .monster-count {
   font-family: var(--font-display);
   font-size: 28px;
@@ -620,6 +625,7 @@ html, body {
 /* 击杀播报按野怪阵营上色（与头顶血条同色系，一眼能看出杀的是哪种） */
 .kill-feed-entry[data-type="red"]  { border-left-color: var(--accent-pink); }
 .kill-feed-entry[data-type="blue"] { border-left-color: var(--accent-blue); }
+.kill-feed-entry[data-type="crab"] { border-left-color: #ffb347; }
 
 .kill-feed-entry.headshot {
   border-left-color: var(--accent-gold);

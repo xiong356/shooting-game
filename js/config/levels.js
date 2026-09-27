@@ -2,8 +2,7 @@
 // 关卡配置表（设计文档 §4 总表 / §8.1 schema，§8.0 四文件拆分）
 // ============================================
 // M1①：L1-L5 数据填入（§11 路线图 M1 =「L1-L5 纯数值递增版」）。
-//   - L4/L5 的蟹/精英怪 M3 才实现，暂用红蓝替身（血池对齐见各行注释），M3 换回真身；
-//   - L6/L7 M5b/M5a 才实现，届时按 §4 总表追加行（id 自动连续）；
+//   - L4/L5 已换 M3 真身（迅捷蟹/精英石像）；L6/L7 M5b/M5a 才实现，届时按 §4 总表追加行（id 自动连续）；
 //   - layout 已按 §4 场地列落地（M2③）：L1/L2 default，L3/L4 variantA（野区窄道），L5 variantB（开阔祭坛）；
 //   - reward.weapon（L3 霰弹枪 / L5 射手步枪）M4 切枪框架落地后补入。
 // 静态校验：esm-lint 对本表常驻跑 validateLevels + 逐预设 validateLayout（§8.1）。
@@ -14,14 +13,20 @@
 // 只缩放血量，不缩放怪物伤害（§2 注意条款）。
 export const HP_CALIB_MUL = 1.5;
 
-// L1-L5 关卡行。血池推导（怪种基座 红150/蓝100，见 js/monsters.js MONSTER_SPECS）：
-//   L1  红×4                = 600 ×1.0×1.5 =  900（§4 同值）
-//   L2  红×3+蓝×3           = 750 ×1.0×1.5 = 1125（§4 同值）
-//   L3  红×4+蓝×3           = 900 ×1.1×1.5 = 1485（§4 同值）
-//   L4  红×4+蓝×3（替身）    = 900 ×1.1×1.5 = 1485（§4 目标 1521，−2.4%，M3 换蟹×4 红×3 蓝×2）
-//   L5  红×5+蓝×3（替身）    =1050 ×1.1×1.5 = 1733（§4 同值，M3 换精英红×1 红×3 蓝×3）
+// 迅捷蟹避障参数（§9 指定落位于此；game.js stepCrabChase 消费）。
+// 排斥半径 = 障碍 AABB 外扩 1.0m，力 = (1 - d/radius) × strength 线性衰减，多障碍矢量叠加。
+// 蟹不用 findDetourCorner 强绕行——那会把「转向钝」弱点消掉（§9 蟹群×绕行算法风险行）。
+export const CRAB_CONFIG = { avoidRadius: 1.0, avoidStrength: 8.0 };
+
+// L1-L5 关卡行。血池推导（怪种基座见 js/monsters.js MONSTER_SPECS）：
+//   L1  红×4                      = 600  ×1.0×1.5 =  900（§4 同值）
+//   L2  红×3+蓝×3                 = 750  ×1.0×1.5 = 1125（§4 同值）
+//   L3  红×4+蓝×3                 = 900  ×1.1×1.5 = 1485（§4 同值）
+//   L4  蟹×4+红×3+蓝×2（M3 真身）  = 922  ×1.1×1.5 = 1521（§4 同值；蟹 68×4+450+200）
+//   L5  精英红+红×3+蓝×3（M3 真身）=1050  ×1.1×1.5 = 1733（§4 同值；300+450+300）
 // parTime = §4 纯输出时长 ×8（§6 公式：38=4.8×8 … 74=9.2×8），S 档时间门 = parTime×1.2。
 // reward.unlock 指向下一关；L5 → 6 指向尚不存在的 L6，选关渲染按 LEVELS.length 截断（M5b 追加后自然接上）。
+// 注意：L4 总数 9 > maxAlive 8——补位队列是 M5b 交付，M3 先全量刷（§4.1 排期一致）。
 export const LEVELS = [
   { id: 1, name: '峡谷初见', hpMul: 1.0, dmgMul: 1.0, spdMul: 1.0,
     spawns: [{ type: 'red', count: 4 }], layout: 'default',
@@ -33,11 +38,11 @@ export const LEVELS = [
     spawns: [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }], layout: 'variantA',
     parTime: 63, maxAlive: 8, reward: { unlock: 4 } },   // weapon:'shotgun' M4 补入（§4 L3 通关奖励）
   { id: 4, name: '蟹群来袭', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
-    spawns: [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }], layout: 'variantA',
-    parTime: 65, maxAlive: 8, reward: { unlock: 5 } },   // M3 替换为 crab×4 red×3 blue×2
+    spawns: [{ type: 'crab', count: 4 }, { type: 'red', count: 3 }, { type: 'blue', count: 2 }], layout: 'variantA',
+    parTime: 65, maxAlive: 8, reward: { unlock: 5 } },
   { id: 5, name: '暗影先锋', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
-    spawns: [{ type: 'red', count: 5 }, { type: 'blue', count: 3 }], layout: 'variantB',
-    parTime: 74, maxAlive: 8, reward: { unlock: 6 } },   // M3 替换为 eliteRed×1 red×3 blue×3
+    spawns: [{ type: 'eliteRed', count: 1 }, { type: 'red', count: 3 }, { type: 'blue', count: 3 }], layout: 'variantB',
+    parTime: 74, maxAlive: 8, reward: { unlock: 6 } },
 ];
 
 // §6 评级阈值常量（S/A/B/F）。命中率门 = 标定中位数 ± offset（M0 标定 n=14），
