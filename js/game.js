@@ -696,9 +696,13 @@ function spawnMonsters(composition, mul) {
         originalRot: monster.rotation.y,
         health: monster.userData.maxHealth,
         dying: false,
-        // 正面被挡住时选定的绕行侧（-1 左 / +1 右 / 0 未选）。
-        // 必须保持到脱离障碍为止，否则每帧重新随机会让野怪左右抖动、原地打转。
-        avoidSide: 0,
+      // 正面被挡住时选定的绕行侧（-1 左 / +1 右 / 0 未选）。
+      // 必须保持到脱离障碍为止，否则每帧重新随机会让野怪左右抖动、原地打转。
+      avoidSide: 0,
+      // 绕行停滞计量（M2 修复「卡墙边缘」）：45 帧窗口的位移基准，见 stepMonsterChase
+      avoidStall: 0,
+      avoidMarkX: 0,
+      avoidMarkZ: 0,
         // ---- 攻击状态机（红近战 / 蓝远程，见 MONSTER ATTACK 区块）----
         attackState: 'idle',   // 红怪：'idle' | 'windup' | 'strike'
         attackT: 0,
@@ -2138,6 +2142,11 @@ function findDetourCorner(fromX, fromZ, playerX, playerZ) {
       for (const cz of zs) {
         if (!isPathClear(cx, cz, playerX, playerZ)) continue;
         const d = Math.hypot(cx - fromX, cz - fromZ);
+        // ⚠️ 「到达角点即冻结」防线（实机卡墙边缘 bug，组 9 C1 复现）：
+        // 绕行会精确走到外扩角上；到达后 d=0 的自身角恰好是最近合法角
+        // （中心线擦过扩展区外沿、肩圆仍被墙挡），选它 = 目标是自己 = 位移恒 0
+        // → 永久冻结。距自身不足一个身位的角点视为「已到达」，改选次近角。
+        if (d < MONSTER_RADIUS) continue;
         if (d < bestDist) { bestDist = d; best = { x: cx, z: cz }; }
       }
     }
@@ -2168,8 +2177,26 @@ function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
   if (ud.avoidSide) {
     if (isCapsulePathClear(pos, dx, dz, playerX, playerZ)) {
       ud.avoidSide = 0;   // 胶囊体已完全绕过，恢复正常追逐
+      ud.avoidStall = 0;
+      ud.avoidCornerX = undefined;
+      ud.avoidCornerY = undefined;
     } else {
-      const corner = findDetourCorner(pos.x, pos.z, playerX, playerZ);
+      // 角点承诺制：选定后走到「到达（d<身位，由 findDetourCorner 的近角跳过接管）或
+      // 失效（角点→玩家被挡，玩家走位导致）」才重选。每帧贪心取「最近合法角」会在
+      // 相邻角点间来回弹——离开角 0.67m 时身后的角又变成最近角，永远出不去（组 9 C1）。
+      let corner = null;
+      if (typeof ud.avoidCornerX === 'number' && typeof ud.avoidCornerY === 'number') {
+        const dCorner = Math.hypot(ud.avoidCornerX - pos.x, ud.avoidCornerY - pos.z);
+        if (dCorner >= MONSTER_RADIUS && isPathClear(ud.avoidCornerX, ud.avoidCornerY, playerX, playerZ)) {
+          corner = { x: ud.avoidCornerX, z: ud.avoidCornerY };
+        } else {
+          ud.avoidCornerX = undefined;   // 已到达或已失效 → 本帧重选
+        }
+      }
+      if (!corner) {
+        corner = findDetourCorner(pos.x, pos.z, playerX, playerZ);
+        if (corner) { ud.avoidCornerX = corner.x; ud.avoidCornerY = corner.z; }
+      }
       if (corner) {
         const cx = corner.x - pos.x;
         const cz = corner.z - pos.z;
@@ -2184,6 +2211,21 @@ function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
       }
       resolveObstacleCollisions(pos, MONSTER_RADIUS);
       resolveShoulderCollisions(pos, dx, dz);
+      // 停滞对策（兜底）：承诺制之外的残余停滞形态（如兜底侧移被墙抵消），
+      // 45 帧（0.75s）位移不足期望步长 ×15% → 翻侧。状态全存 ud，纯函数可测。
+      ud.avoidStall = (ud.avoidStall || 0) + 1;
+      if (ud.avoidStall >= 45) {
+        const markX = ud.avoidMarkX === undefined ? pos.x : ud.avoidMarkX;
+        const markZ = ud.avoidMarkZ === undefined ? pos.z : ud.avoidMarkZ;
+        if (Math.hypot(pos.x - markX, pos.z - markZ) < step * 45 * 0.15) {
+          ud.avoidSide = -ud.avoidSide;
+          ud.avoidCornerX = undefined;   // 翻侧后旧角点承诺作废
+          ud.avoidCornerY = undefined;
+        }
+        ud.avoidStall = 0;
+        ud.avoidMarkX = pos.x;
+        ud.avoidMarkZ = pos.z;
+      }
       return 0;
     }
   }
@@ -2203,7 +2245,13 @@ function stepMonsterChase(pos, ud, playerX, playerZ, speed, dt) {
   // 只有「正面顶住」才需要进入绕行模式 —— 用朝玩家的有效推进量区分这两种情况。
   const advance = getAdvance(fromX, fromZ, pos.x, pos.z, dx, dz);
   if (isMonsterHeadOnBlocked(advance, step)) {
-    if (!ud.avoidSide) ud.avoidSide = Math.random() < 0.5 ? -1 : 1;
+    if (!ud.avoidSide) {
+      ud.avoidSide = Math.random() < 0.5 ? -1 : 1;
+      // 停滞计量的基准点在进绕行时打标（上一段的残留标记会污染首个 45 帧窗口）
+      ud.avoidStall = 0;
+      ud.avoidMarkX = pos.x;
+      ud.avoidMarkZ = pos.z;
+    }
   }
   return advance;
 }
