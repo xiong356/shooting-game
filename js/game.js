@@ -3383,7 +3383,8 @@ function updateRangedAttack(monster, ud, dist, dt) {
 
 // --- 迅捷蟹（§5.3：Z 字突进 → 扑击 → 后跳，三段都有位移预警）---
 const CRAB_TURN_RATE = 120 * Math.PI / 180; // 转向角速度上限（rad/s）：转向半径 v/ω ≈ 3.8m——横向滑步能甩掉的几何来源
-const CRAB_RUSH_MAX = 1.4;         // 单段突进时长上限（秒）——到点强制后跳，防无限直线冲（§9 贴角 ≥2.5s 的节奏来源）
+const CRAB_RUSH_MAX = 0.8;         // 单段突进时长上限（秒）——到点强制后跳。0.8s 使 §9 贴角验收
+                                   // （15m→贴脸 ≥2.5s）落在 2.7s 左右；1.4s 只能跑到 2.2s 不达标
 const CRAB_HOP_TIME = 0.3;         // 后跳时长（=玩家的脱战窗口，§5.3）
 const CRAB_HOP_SPEED = 5.3;        // 后跳速度（0.3s × 5.3 ≈ 1.6m 拉开）
 const CRAB_POUNCE_RANGE = 1.6;     // 进入扑击的距离门限
@@ -3402,15 +3403,36 @@ function resetCrabPose(ud) {
 }
 
 /**
- * 蟹的突进移动（纯函数，steering-test 抽取做 §9 两条验收）。
+ * 蟹的移动循环（纯函数，steering-test 抽取做 §9 两条验收）——rush/hop 节奏在此全权驱动：
+ *   rush（钝转向突进，单段 CRAB_RUSH_MAX 到点）→ hop（0.3s 后跳拉开 = 玩家节奏窗口）→ rush…
  * ① 转向钝：持独立朝向角 heading，每帧朝玩家 bearing 旋转、clamp ±CRAB_TURN_RATE×dt；
  *    移动沿 heading 而非直视玩家——追横向移动目标自然甩出 Z 字。
  * ② 排斥力避障（§9：绝不套 findDetourCorner 强绕行——那会消掉转向钝弱点）：
  *    对每个障碍 AABB 外扩 CRAB_CONFIG.avoidRadius 内施加线性衰减排斥力
  *    (1 - d/radius) × CRAB_CONFIG.avoidStrength，多障碍矢量叠加进移动方向，无拐角搜索。
+ * windup/lunge（扑击两态）不进本函数——由 updateCrab 驱动，扑击发起会打断当前段。
  */
 function stepCrabChase(pos, ud, playerX, playerZ, dt) {
-  // heading 朝玩家 bearing 旋转（限速）
+  ud.crabT += dt;
+
+  if (ud.crabState === 'hop') {
+    // 后跳：沿背向玩家方向直线拉开（方向可预判——这正是窗口的含义）
+    const dirX = pos.x - playerX;
+    const dirZ = pos.z - playerZ;
+    const len = Math.hypot(dirX, dirZ) || 1;
+    pos.x += dirX / len * CRAB_HOP_SPEED * dt;
+    pos.z += dirZ / len * CRAB_HOP_SPEED * dt;
+    resolveObstacleCollisions(pos, ud.radius);
+    pos.x = Math.max(-CRAB_BOUNDS.x, Math.min(CRAB_BOUNDS.x, pos.x));
+    pos.z = Math.max(CRAB_BOUNDS.zMin, Math.min(CRAB_BOUNDS.zMax, pos.z));
+    if (ud.crabT >= CRAB_HOP_TIME) {
+      ud.crabState = 'rush';
+      ud.crabT = 0;
+    }
+    return;
+  }
+
+  // rush：heading 朝玩家 bearing 旋转（限速）
   const dx = playerX - pos.x;
   const dz = playerZ - pos.z;
   let diff = Math.atan2(dx, dz) - ud.crabHeading;
@@ -3445,49 +3467,25 @@ function stepCrabChase(pos, ud, playerX, playerZ, dt) {
   // 出界钳制（蟹后跳/被挤出可玩区时拉回；边界墙不登记碰撞体）
   pos.x = Math.max(-CRAB_BOUNDS.x, Math.min(CRAB_BOUNDS.x, pos.x));
   pos.z = Math.max(CRAB_BOUNDS.zMin, Math.min(CRAB_BOUNDS.zMax, pos.z));
+
+  // 单段突进到点 → 强制后跳（防无限直线冲；§9 贴角 ≥2.5s 验收的节奏来源）
+  if (ud.crabT >= CRAB_RUSH_MAX) {
+    ud.crabState = 'hop';
+    ud.crabT = 0;
+  }
 }
 
 /**
  * 迅捷蟹状态机（§5.3 三段式，全部带位移预警）：
- *   rush（钝转向突进）→ 进扑距 → windup（0.3s 压低蓄力，扑向锁定于结束帧——可侧移躲开）
- *   → lunge（0.25s 扑出 + 首帧判伤）→ hop（0.3s 后跳拉开 = 玩家节奏窗口）→ rush…
- *   rush 单段 1.4s 上限：没扑到也强制后跳，防无限直线冲（§9 贴角 ≥2.5s 验收的节奏来源）。
+ *   rush/hop 移动循环 → 进扑距 → windup（0.3s 压低蓄力，扑向锁定于结束帧——可侧移躲开）
+ *   → lunge（0.25s 扑出 + 首帧判伤）→ hop 拉开 → rush…
+ * 扑击只从 rush 发起（hop 是玩家的真窗口，不从中途偷袭）。
  */
 function updateCrab(monster, ud, dist, dt) {
-  ud.crabT += dt;
   ud.pounceCooldown -= dt;
 
-  if (ud.crabState === 'rush') {
-    stepCrabChase(monster.position, ud, playerPosition.x, playerPosition.z, dt);
-    if (dist <= CRAB_POUNCE_RANGE && ud.pounceCooldown <= 0 &&
-        isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
-      ud.crabState = 'windup';
-      ud.crabT = 0;
-    } else if (ud.crabT >= CRAB_RUSH_MAX) {
-      ud.crabState = 'hop';
-      ud.crabT = 0;
-    }
-    return;
-  }
-
-  if (ud.crabState === 'hop') {
-    // 后跳：沿背向玩家方向直线拉开（方向可预判——这正是窗口的含义）
-    const dirX = monster.position.x - playerPosition.x;
-    const dirZ = monster.position.z - playerPosition.z;
-    const len = Math.hypot(dirX, dirZ) || 1;
-    monster.position.x += dirX / len * CRAB_HOP_SPEED * dt;
-    monster.position.z += dirZ / len * CRAB_HOP_SPEED * dt;
-    resolveObstacleCollisions(monster.position, ud.radius);
-    monster.position.x = Math.max(-CRAB_BOUNDS.x, Math.min(CRAB_BOUNDS.x, monster.position.x));
-    monster.position.z = Math.max(CRAB_BOUNDS.zMin, Math.min(CRAB_BOUNDS.zMax, monster.position.z));
-    if (ud.crabT >= CRAB_HOP_TIME) {
-      ud.crabState = 'rush';
-      ud.crabT = 0;
-    }
-    return;
-  }
-
   if (ud.crabState === 'windup') {
+    ud.crabT += dt;
     const t = Math.min(ud.crabT / CRAB_POUNCE_WINDUP, 1);
     if (ud.bodyPivot) ud.bodyPivot.rotation.x = CRAB_LEAN_WINDUP * t;
     if (ud.crabT >= CRAB_POUNCE_WINDUP) {
@@ -3505,25 +3503,38 @@ function updateCrab(monster, ud, dist, dt) {
     return;
   }
 
-  // lunge：锁定方向扑出，首帧判伤（之后扑程内不重复判）
-  monster.position.x += ud.lungeX * CRAB_POUNCE_SPEED * dt;
-  monster.position.z += ud.lungeZ * CRAB_POUNCE_SPEED * dt;
-  if (ud.bodyPivot) ud.bodyPivot.rotation.x = CRAB_LEAN_LUNGE;
-  resolveObstacleCollisions(monster.position, ud.radius);
+  if (ud.crabState === 'lunge') {
+    ud.crabT += dt;
+    // 锁定方向扑出，首帧判伤（之后扑程内不重复判）
+    monster.position.x += ud.lungeX * CRAB_POUNCE_SPEED * dt;
+    monster.position.z += ud.lungeZ * CRAB_POUNCE_SPEED * dt;
+    if (ud.bodyPivot) ud.bodyPivot.rotation.x = CRAB_LEAN_LUNGE;
+    resolveObstacleCollisions(monster.position, ud.radius);
 
-  if (!ud.meleeHitDone) {
-    ud.meleeHitDone = true;
-    if (dist <= CRAB_POUNCE_HIT_RANGE &&
-        isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
-      damagePlayer(ud.meleeDamage);
+    if (!ud.meleeHitDone) {
+      ud.meleeHitDone = true;
+      if (dist <= CRAB_POUNCE_HIT_RANGE &&
+          isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+        damagePlayer(ud.meleeDamage);
+      }
     }
+
+    if (ud.crabT >= CRAB_POUNCE_TIME) {
+      ud.crabState = 'hop';   // 扑完立即后跳拉开（§5.3 三段式收尾，扑空也跳）
+      ud.crabT = 0;
+      ud.pounceCooldown = CRAB_POUNCE_COOLDOWN;
+      resetCrabPose(ud);
+    }
+    return;
   }
 
-  if (ud.crabT >= CRAB_POUNCE_TIME) {
-    ud.crabState = 'hop';   // 扑完立即后跳拉开（§5.3 三段式收尾，扑空也跳）
+  // rush / hop：移动循环由 stepCrabChase 全权驱动
+  stepCrabChase(monster.position, ud, playerPosition.x, playerPosition.z, dt);
+  // 进扑距 → 扑击（只从 rush 发起，打断当前段；hop 是玩家窗口）
+  if (ud.crabState === 'rush' && dist <= CRAB_POUNCE_RANGE && ud.pounceCooldown <= 0 &&
+      isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+    ud.crabState = 'windup';
     ud.crabT = 0;
-    ud.pounceCooldown = CRAB_POUNCE_COOLDOWN;
-    resetCrabPose(ud);
   }
 }
 
@@ -4257,6 +4268,7 @@ window.__SNAPSHOT__ = () => ({
   // 野怪位置与绕行状态，供自动化验证「不穿墙 / 不卡死」
   monsters: monsters.filter(m => !m.userData.dying).map(m => ({
     id: m.userData.id,
+    type: m.userData.type,   // M3⑤：L4 蟹 / L5 精英的探针断言用
     x: m.position.x,
     z: m.position.z,
     alert: !!m.userData.alert,

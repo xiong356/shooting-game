@@ -125,6 +125,18 @@ const ok = (cond, label, extra) => {
   const l1b = await evalJS(`JSON.stringify({ layout: window.__SNAPSHOT__().layout, count: window.__SNAPSHOT__().obstacleCount })`).then(s => JSON.parse(s));
   ok(l1b.layout === 'default' && l1b.count === 9, '回 L1 = 9（清场无残留，旧碰撞盒不成隐形墙）', l1b);
 
+  // ---- 3c. M3 真身怪种：L4 含蟹 / L5 含精英（__SNAPSHOT__ monsters.type）----
+  await evalJS('window.__SNAPSHOT__.loadLevel(4)');
+  await sleep(500);
+  const l4 = await evalJS(`JSON.stringify(window.__SNAPSHOT__().monsters.map(m => m.type))`).then(s => JSON.parse(s));
+  ok(l4.length === 9, 'L4 刷怪总数 9（蟹4+红3+蓝2，maxAlive 执行留 M5b）', l4.length);
+  ok(l4.filter(t => t === 'crab').length === 4, 'L4 含 4 只迅捷蟹', l4);
+  await evalJS('window.__SNAPSHOT__.loadLevel(5)');
+  await sleep(500);
+  const l5m = await evalJS(`JSON.stringify(window.__SNAPSHOT__().monsters.map(m => m.type))`).then(s => JSON.parse(s));
+  ok(l5m.length === 7, 'L5 刷怪总数 7（精英红1+红3+蓝3）', l5m.length);
+  ok(l5m.filter(t => t === 'eliteRed').length === 1, 'L5 含 1 只精英红', l5m);
+
   // ---- 4. 阵亡路径：L2 挂机等死 → F + 不写盘 ----
   let engaged = false;
   for (let i = 0; i < 10; i++) {

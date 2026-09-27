@@ -38,11 +38,18 @@ const FN_NAMES = ['resolveObstacleCollisions', 'pushCircleOutOfObstacles',
                   'resolveShoulderCollisions', 'isCapsulePathClear', 'getAdvance',
                   'isMonsterHeadOnBlocked',
                   'getAvoidDir', 'stepMonsterChase', 'isPathClear', 'findDetourCorner',
-                  'shouldChase'];
+                  'shouldChase', 'stepCrabChase'];
 
 /** 取一个顶层 const 的右值 */
 function grabConst(src, name) {
   const re = new RegExp('^const ' + name + ' = ([^;]+);', 'm');
+  const m = src.match(re);
+  return m ? m[1] : null;
+}
+
+/** 取一个 export const 的右值（levels.js 是 ESM 导出） */
+function grabExport(src, name) {
+  const re = new RegExp('^export const ' + name + ' = ([^;]+);', 'm');
   const m = src.match(re);
   return m ? m[1] : null;
 }
@@ -67,13 +74,17 @@ function build(obstacles, steering) {
                   'MONSTER_SHOULDER_OFFSET', 'MONSTER_SHOULDER_RADIUS',
                   'MONSTER_DETOUR_MARGIN',
                   'MONSTER_BLOCKED_ADVANCE_MIN', 'MONSTER_AVOID_STRENGTH',
-                  'MONSTER_PROBE_RADIUS']
+                  'MONSTER_PROBE_RADIUS', 'CRAB_TURN_RATE', 'CRAB_BOUNDS',
+                  'CRAB_RUSH_MAX', 'CRAB_HOP_TIME', 'CRAB_HOP_SPEED']
     .map(function (n) { return 'const ' + n + ' = ' + grabConst(SRC, n) + ';'; })
     .join('\n');
+  // CRAB_CONFIG 真身在 js/config/levels.js（ESM export），抽取右值内联求值（§9 参数落位于彼）
+  const crabCfg = grabExport(SRC, 'CRAB_CONFIG');
+  if (!crabCfg) { console.log('抽不到 CRAB_CONFIG'); process.exit(1); }
   const ret = 'return { ' + FN_NAMES.join(', ') +
               ', MONSTER_RADIUS, MONSTER_BLOCKED_ADVANCE_MIN, MONSTER_AVOID_STRENGTH };';
   return new Function('obstacles', 'Math',
-    'const solidObstacles = obstacles;\n' + consts + '\n' + fns + override + ret
+    'const solidObstacles = obstacles;\n' + consts + '\nconst CRAB_CONFIG = ' + crabCfg + ';\n' + fns + override + ret
   )(obstacles, MathStub);
 }
 
@@ -301,6 +312,60 @@ console.log('=== 组 10：绕墙端点（角落震荡回归组）===');
     ok(reached(r, player, [WALL]), '【关键】' + label + '：绕过端点追到玩家（距离+视线）',
        reachedMsg(r, player, [WALL]));
   }
+}
+
+console.log('=== 组 11：迅捷蟹转向钝验收（§9 蟹群×绕行算法 / 蟹速度×场地死角）===');
+{
+  // §9 两条验收标准，用抽取的 stepCrabChase 真实实现离线仿真。
+  // 空场（无障碍）：纯转向钝 vs 横向移动，排斥力不参与，几何弱点单独归因。
+
+  // 场景一：玩家 3m/s 横向匀速往返（x∈[-5,5], z=0），蟹从 (0,-15) 突进 15s。
+  // 「pursuit 接触帧占比」= 蟹与玩家距离 ≤1.2m 的帧数 / 总帧数。
+  function pursuitRate(chaseFn, speed) {
+    const api = build([], true);
+    const pos = { x: 0, z: -15 };
+    const ud = { crabHeading: 0, radius: 0.35, chaseSpeed: 8.0, avoidSide: 0, avoidStall: 0, crabState: 'rush', crabT: 0 };
+    const dt = 1 / 60;
+    let px = 0, pvx = 3, contact = 0;
+    for (let i = 0; i < 900; i++) {
+      px += pvx * dt;
+      if (px > 5) { px = 5; pvx = -3; }
+      if (px < -5) { px = -5; pvx = 3; }
+      chaseFn(api, pos, ud, px, 0, dt, speed);
+      if (Math.hypot(pos.x - px, pos.z - pz0()) <= 1.2) contact++;
+    }
+    function pz0() { return 0; }
+    return contact / 900;
+  }
+  function crabChase(api, pos, ud, px, pz, dt) { api.stepCrabChase(pos, ud, px, pz, dt); }
+  function redChase(api, pos, ud, px, pz, dt, speed) {
+    const d0 = Math.hypot(pos.x - px, pos.z - pz);
+    if (d0 > 0.9) api.stepMonsterChase(pos, ud, px, pz, speed, dt);
+  }
+  const crabRate = pursuitRate(crabChase);
+  const redRate = pursuitRate(redChase, 5.0);
+  console.log('  蟹（转向钝 8.0）接触占比 ' + (crabRate * 100).toFixed(1) + '%   红怪对照（即时转向 5.0）' + (redRate * 100).toFixed(1) + '%');
+  ok(crabRate < 0.30, '【关键 §9】玩家横向匀速时蟹 pursuit 接触占比 <30%（转向钝弱点成立）',
+     (crabRate * 100).toFixed(1) + '%');
+  ok(redRate > 0.5, '【对照】红怪同场景接触占比 >50%（弱点是蟹专属，不是速度差）',
+     (redRate * 100).toFixed(1) + '%');
+
+  // 场景二：玩家贴场角静止，蟹从 ~15m 外突进到贴脸 ≥2.5s（后跳节奏窗口存在）。
+  function cornerRushTime() {
+    const api = build([], true);
+    const pos = { x: -13, z: -33 };
+    const ud = { crabHeading: Math.atan2(-11, -11), radius: 0.35, chaseSpeed: 8.0, crabState: 'rush', crabT: 0 };
+    const dt = 1 / 60;
+    for (let i = 0; i < 1800; i++) {
+      api.stepCrabChase(pos, ud, -24, -44, dt);
+      if (Math.hypot(pos.x + 24, pos.z + 44) <= 1.2) return i / 60;
+    }
+    return Infinity;
+  }
+  const rushT = cornerRushTime();
+  console.log('  贴角 15m 突进到贴脸 ' + rushT.toFixed(2) + 's');
+  ok(rushT >= 2.5, '【关键 §9】贴角突进 ≥2.5s（后跳节奏窗口存在）', rushT.toFixed(2));
+  ok(rushT < 8, '【对照】蟹最终确实能贴脸（窗口≠追不上）', rushT.toFixed(2));
 }
 
 console.log('');

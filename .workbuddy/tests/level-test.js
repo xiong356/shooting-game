@@ -164,13 +164,15 @@ async function freshModule(relPath, tag, initialStorage) {
     // 怪种基座 HP：monsters.js import three 无法求值，正则读数字字面量（只读数字，不求值）
     const monstersSrc = fs.readFileSync(path.join(ROOT, 'js/monsters.js'), 'utf8');
     const baseHP = {};
-    for (const m of monstersSrc.matchAll(/^\s{2}(red|blue):\s*\{ maxHealth: (\d+)/gm)) {
+    for (const m of monstersSrc.matchAll(/^\s{2}(red|blue|crab|eliteRed|eliteBlue):\s*\{ maxHealth: (\d+)/gm)) {
       baseHP[m[1]] = Number(m[2]);
     }
     ok(baseHP.red === 150 && baseHP.blue === 100, '怪种基座读取（红150/蓝100，§2）', baseHP);
+    ok(baseHP.crab === 68 && baseHP.eliteRed === 300 && baseHP.eliteBlue === 220,
+      'M3 新怪种基座（蟹68/精英红300/精英蓝220，§5.3）', baseHP);
 
-    // §4 总表血池列（M1 版：L4/L5 替身行目标值见 levels.js 行注释）
-    const EXPECTED = [900, 1125, 1485, 1485, 1733];
+    // §4 总表血池列（M3 真身版：L4 蟹×4红×3蓝×2 / L5 精英红+红×3蓝×3）
+    const EXPECTED = [900, 1125, 1485, 1521, 1733];
     ok(L.LEVELS.length === EXPECTED.length, 'LEVELS 行数 = 5（M1 范围）', L.LEVELS.length);
     for (let i = 0; i < L.LEVELS.length; i++) {
       const lv = L.LEVELS[i];
