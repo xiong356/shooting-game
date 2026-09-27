@@ -259,6 +259,50 @@ console.log('=== 组 8：玩家贴隔断（stopDist 短路回归用例）===');
   ok(reached(r2, far, [WALL]), '【对照】玩家离隔断较远时同样追得到', reachedMsg(r2, far, [WALL]));
 }
 
+console.log('=== 组 9：variantA S 口（实机「卡在墙边缘」回归组）===');
+{
+  // L3/L4 野区窄道：中路 H1(z=-14)/H2(z=-26) 两道横隔断，野怪从口内/深处追北面玩家
+  // 必须绕出 3m 窄口。实机报告：野怪常卡在隔断端点绕不过来 —— 本组钉死该回归。
+  const VA = [
+    WALL,
+    box(8, -4, 0.3, 14, 1.8),
+    box(-15, -12, 1.2, 1.2, 3), box(15, -12, 1.2, 1.2, 3),
+    box(-15, -28, 1.2, 1.2, 3), box(15, -28, 1.2, 1.2, 3),
+    box(0, -35, 1.2, 1.2, 3), box(-20, -40, 1.2, 1.2, 3), box(20, -40, 1.2, 1.2, 3),
+    box(-1.5, -14, 12.7, 0.3, 1.8),   // H1：x[-7.85,4.85]  右侧 3m 窄口
+    box(1.5, -26, 12.7, 0.3, 1.8),    // H2：x[-4.85,7.85]  左侧 3m 窄口
+  ];
+  const cases = [
+    ['C1 口内→北', { x: 0, z: -20 }, { x: 0, z: 2 }, 5400, 0.9],
+    ['C3 深处→北', { x: 0, z: -40 }, { x: 0, z: 2 }, 7200, 0.9],
+    ['C5 口内→北(rng0.1)', { x: 0, z: -20 }, { x: 0, z: 2 }, 5400, 0.1],
+  ];
+  for (const [label, start, player, frames, rng] of cases) {
+    const r = simulate(VA, start, player, frames, true, rng);
+    console.log('  ' + label + ': ' + reachedMsg(r, player, VA));
+    ok(reached(r, player, VA), '【关键】' + label + '：野怪绕出窄口追到玩家（距离+视线）',
+       reachedMsg(r, player, VA));
+  }
+}
+
+console.log('=== 组 10：绕墙端点（角落震荡回归组）===');
+{
+  // 单隔断端点场景：野怪沿墙滑到端点后，需绕过端点才能接近玩家。
+  // 修复前：退出判定覆盖 1.14m < 身体轮廓 1.25m，在角附近提前退出绕行 → 立即再顶住 →
+  // avoidSide 重新随机 → 在墙边缘原地震荡（实机截图：蓝怪停在隔断端点不动）。
+  const cases = [
+    ['A1 斜擦北端角(rng0.9)', { x: -11, z: 0 }, { x: -6, z: 4.5 }, 3600, 0.9],
+    ['A2 斜擦北端角(rng0.1)', { x: -11, z: 0 }, { x: -6, z: 4.5 }, 3600, 0.1],
+    ['B1 正对端点', { x: -10, z: 5 }, { x: -6, z: 5.5 }, 3600, 0.9],
+  ];
+  for (const [label, start, player, frames, rng] of cases) {
+    const r = simulate([WALL], start, player, frames, true, rng);
+    console.log('  ' + label + ': ' + reachedMsg(r, player, [WALL]));
+    ok(reached(r, player, [WALL]), '【关键】' + label + '：绕过端点追到玩家（距离+视线）',
+       reachedMsg(r, player, [WALL]));
+  }
+}
+
 console.log('');
 console.log('结果: ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);
