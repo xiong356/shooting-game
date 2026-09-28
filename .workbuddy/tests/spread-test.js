@@ -120,20 +120,20 @@ fs.copyFileSync(path.join(ROOT, 'js/config/weapons.js'), weaponsDest);
   const { falloffMultiplier: f } = await import(pathToFileURL(weaponsDest).href);
   const SG = WEAPONS.shotgun;
 
-  console.log('=== 组 5：射程衰减 falloffMultiplier（§5.4 线性归零）===');
+  console.log('=== 组 5：射程衰减 falloffMultiplier（§5.4 线性归零 + playtest 收紧 {9,16}）===');
   {
     const fo = SG.damageFalloff;
-    ok(fo && fo.start === 12 && fo.end === 20, 'shotgun.damageFalloff = {12,20}（表口径）', JSON.stringify(fo));
+    ok(fo && fo.start === 9 && fo.end === 16, 'shotgun.damageFalloff = {9,16}（playtest 收紧，原 12-20）', JSON.stringify(fo));
     ok(f(3, fo) === 1, '3m 贴脸 → 全伤');
-    ok(f(12, fo) === 1, '12m（start 边界，≤ 收）→ 全伤');
-    ok(Math.abs(f(16, fo) - 0.5) < 1e-9, '16m（区间中点）→ 0.5', f(16, fo));
-    ok(f(19.9, fo) > 0 && f(19.9, fo) < 0.1, '19.9m → 接近 0 但仍判伤');
-    ok(f(20, fo) === 0, '20m（end 边界，≥ 收）→ 0（不判伤）');
+    ok(f(9, fo) === 1, '9m（start 边界，≤ 收）→ 全伤');
+    ok(Math.abs(f(12.5, fo) - 0.5) < 1e-9, '12.5m（区间中点）→ 0.5', f(12.5, fo));
+    ok(f(15.9, fo) > 0 && f(15.9, fo) < 0.1, '15.9m → 接近 0 但仍判伤');
+    ok(f(16, fo) === 0, '16m（end 边界，≥ 收）→ 0（不判伤）');
     ok(f(30, fo) === 0, '30m → 0');
     ok(f(5, null) === 1 && f(100, null) === 1, 'AK/步枪 falloff=null → 恒全伤');
   }
 
-  console.log('=== 组 6：§5.4 M4 验收——贴脸 3m 单发必杀 68 血蟹 ===');
+  console.log('=== 组 6：§5.4 M4 验收——贴脸单发必杀蟹（playtest 上调 15/丸）===');
   {
     // 几何验收：8 丸在 4° 半角锥内均匀分布，3m 处散布盘半径 = 3×tan(4°) ≈ 0.21m；
     // 蟹 hitbox 以 0.5m 半径圆盘近似（壳体 0.55×0.7 的内切保守值）——散布盘完全落入 → 8/8 必中。
@@ -142,11 +142,14 @@ fs.copyFileSync(path.join(ROOT, 'js/config/weapons.js'), weaponsDest);
     ok(spreadRadiusAt3m < crabHitRadius, '3m 散布盘半径 ' + spreadRadiusAt3m.toFixed(3) + 'm < 蟹 hitbox 0.5m → 每丸必中',
        spreadRadiusAt3m.toFixed(3));
     ok(SG.pelletCount === 8, '桌面弹丸数 8', SG.pelletCount);
-    const burst = SG.pelletCount * SG.damage;   // 8×9=72
-    ok(burst >= 68, '单发全中 ' + burst + ' 伤 ≥ 蟹 68 血 → 一发必杀（§5.4 M4 验收）', burst);
-    ok(burst - SG.damage < 68, '7 丸（63 伤）杀不掉——「打它值不值」的决策空间保留（§5.3）', burst - SG.damage);
+    const burst = SG.pelletCount * SG.damage;   // 8×15=120
+    ok(burst >= 68, '单发全中 ' + burst + ' 伤 ≥ 蟹基座 68 血（§5.3 一发必杀）', burst);
+    // L4 实际蟹血 = 68 × hpMul 1.1 × HP_CALIB_MUL 1.5 = 112.2——playtest 上调后仍一发必杀
+    const l4CrabHP = 68 * 1.1 * 1.5;
+    ok(burst >= l4CrabHP, 'L4 实际蟹血 ' + l4CrabHP.toFixed(1) + ' 亦一发必杀（贴脸）', burst);
+    ok(burst - SG.damage < l4CrabHP, '漏 1 丸（' + (burst - SG.damage) + ' 伤）杀不死 L4 蟹——瞄准仍有意义', burst - SG.damage);
     ok(SG.headshotMult === 1, '爆头不加成（headshotMult=1，§5.4）');
-    ok(SG.pelletCountMobile === 6, '移动端降档 6 丸（§9 性能风险行；代价：移动端需两发杀蟹）', SG.pelletCountMobile);
+    ok(SG.pelletCountMobile === 6, '移动端降档 6 丸（90 伤，L4 蟹需两发）', SG.pelletCountMobile);
     ok(Array.isArray(SG.sprayPattern) && SG.sprayPattern.length === 0, 'sprayPattern 空数组（跳过 yaw 累加，§8.0）');
     ok(SG.tracerCount === 3 && SG.tracerCount <= SG.pelletCount, '曳光合并 ≤3 条（§9 帧率风险行）');
     // 收紧预案（§5.4：不达标二选一）——若未来几何改动导致 spreadRadius ≥ hitRadius，

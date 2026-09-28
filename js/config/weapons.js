@@ -45,9 +45,9 @@ export const WEAPONS = {
   shotgun: {
     id: 'shotgun',
     name: '裂空',
-    // ---- 伤害 / 射速 / 弹匣 / 换弹（§5.4 表）----
-    damage: 9,              // 每丸基础伤害（独立判定）
-    headshotMult: 1,        // 爆头不加成（§5.4：每丸恒 9 伤）
+    // ---- 伤害 / 射速 / 弹匣 / 换弹（§5.4 表 + playtest 调整：贴脸 15/丸）----
+    damage: 15,             // 每丸基础伤害（独立判定）——playtest 反馈 9 偏低，上调至 15
+    headshotMult: 1,        // 爆头不加成（§5.4：每丸独立判定，恒 15 伤）
     fireInterval: 0.8,      // 泵动节奏
     magSize: 6,
     reloadTime: 2.2,
@@ -64,7 +64,7 @@ export const WEAPONS = {
     pelletCount: 8,
     pelletCountMobile: 6,   // 移动端性能降档（§9 霰弹×移动端帧率风险行）
     pelletConeHalf: 0.0698, // 4°（rad）：3m 处散布半径 ≈0.21m
-    damageFalloff: { start: 12, end: 20 },  // 0-12m 全伤，12-20m 线性归零，>20m 不判伤
+    damageFalloff: { start: 9, end: 16 },   // playtest 调整：0-9m 全伤，9-16m 线性归零（原 12-20 收紧——贴脸更强、更远更废）
     tracerCount: 3,         // 8 丸曳光合并 ≤3 条（视觉足够、性能可控）
     tracer: {
       speed: 100,

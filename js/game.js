@@ -3682,7 +3682,8 @@ const CRAB_POUNCE_HIT_RANGE = 1.4; // 扑击首帧判伤距离
 const CRAB_POUNCE_WINDUP = 0.3;    // 蓄力前摇（压低身体=位移预警，P2）
 const CRAB_POUNCE_TIME = 0.25;     // 扑击时长
 const CRAB_POUNCE_SPEED = 10;      // 扑击速度（0.25s × 10 = 2.5m 扑程）
-const CRAB_POUNCE_COOLDOWN = 2.0;  // 扑击间隔（§5.3 冷却 2s）
+const CRAB_POUNCE_COOLDOWN = 1.2;  // 扑击间隔（§5.3 原 2s；playtest 调整：贴脸攻速——
+                                   // 4 只围脸 ≈ 每秒 10 伤，正是 §5.3「威胁来自数量」的本意）
 const CRAB_LEAN_WINDUP = -0.25;    // 蓄力后坐姿态（rad）
 const CRAB_LEAN_LUNGE = 0.2;       // 扑击前倾姿态（rad）
 const CRAB_BOUNDS = { x: 25.6, zMin: -45.6, zMax: 11.6 };  // 蟹不出可玩区（半径 0.35 + 余量）
