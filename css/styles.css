@@ -401,10 +401,11 @@ html, body {
   text-transform: uppercase;
 }
 
-/* 武器槽位条（M4②）：数字键提示，owned 亮 / 未拥有灰 / 当前粉高亮 */
+/* 武器槽位条（M4②）：数字键提示，owned 亮 / 未拥有灰 / 当前粉高亮。
+   独立于 bottom-bar 定位（曾放 bar 内与弹药数字重叠，冒烟发现） */
 #weapon-slots {
   position: absolute;
-  bottom: calc(18px + var(--safe-bottom));
+  bottom: calc(96px + var(--safe-bottom));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
