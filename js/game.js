@@ -745,12 +745,14 @@ const DEATH_BOUNDS = { x: 26, zMin: -46, zMax: 12 };
 /**
  * 对野怪造成伤害。返回是否因此击杀。
  * @param {boolean} isHeadshot 命中头部（名为 'head' 的 mesh）
+ * @param {number} [amount] 伤害值（M4③：由 shoot() 按当前武器/爆头/射程衰减算好后传入；
+ *                          缺省 = 旧口径 AK.damage × 爆头倍率，兼容既有调用）
  */
-function damageMonster(monster, isHeadshot) {
+function damageMonster(monster, isHeadshot, amount) {
   const ud = monster.userData;
   if (ud.dying) return false;
 
-  const dmg = AK.damage * (isHeadshot ? AK.headshotMult : 1);
+  const dmg = amount !== undefined ? amount : AK.damage * (isHeadshot ? AK.headshotMult : 1);
   ud.health = Math.max(0, ud.health - dmg);
   const ratio = ud.health / ud.maxHealth;
 
@@ -2975,6 +2977,17 @@ function getGunWorldPosition() {
   return worldPos;
 }
 
+/**
+ * 射程衰减系数（M4③ §5.4）：≤start 全伤 → start~end 线性归零 → >end 为 0。
+ * 纯函数（spread-test 抽取验收）。falloff 为 null（AK/步枪）时恒 1。
+ */
+function falloffMultiplier(dist, falloff) {
+  if (!falloff) return 1;
+  if (dist <= falloff.start) return 1;
+  if (dist >= falloff.end) return 0;
+  return 1 - (dist - falloff.start) / (falloff.end - falloff.start);
+}
+
 function shoot() {
   if (!canShoot || state.reloading || state.currentAmmo <= 0) return;
   if (state.currentAmmo <= 0) return;
@@ -2986,8 +2999,11 @@ function shoot() {
 
   // Apply recoil: vertical kick + pattern-driven horizontal (spray pattern, deterministic)
   recoilPitch = Math.min(recoilPitch + AK.recoilPerShot, AK.recoilMaxPitch);
-  recoilYaw = Math.max(-AK.recoilMaxYaw, Math.min(AK.recoilMaxYaw,
-    recoilYaw + AK.sprayPattern[sprayIndex % AK.sprayPattern.length] * AK.recoilYawPerShot));
+  // M4③：sprayPattern 允许为空数组（霰弹）——空则跳过 yaw 累加（% 0 会得 NaN）
+  if (AK.sprayPattern.length > 0) {
+    recoilYaw = Math.max(-AK.recoilMaxYaw, Math.min(AK.recoilMaxYaw,
+      recoilYaw + AK.sprayPattern[sprayIndex % AK.sprayPattern.length] * AK.recoilYawPerShot));
+  }
   sprayIndex++;
   weaponKick = 1;
 
@@ -3010,76 +3026,102 @@ function shoot() {
   // Update ammo UI
   updateAmmoUI();
 
-  // Raycast for monster hit（已死亡的野怪不再参与命中判定）
-  // 命中/拖尾/撞墙全部基于偏移后的 spreadDir，准星只负责瞄准，弹道允许飘。
-  // camera 是 scene 直接子级且 scene 无变换，getWorldPosition 与 setFromCamera
-  // 的射线原点等价（getWorldPosition 会先刷新世界矩阵，取到的是最新值）。
-  raycaster.set(camera.getWorldPosition(new THREE.Vector3()), spreadDir);
+  // ---- 弹丸循环（M4③）：AK/步枪单丸；霰弹多丸锥面散布（移动端 pelletCountMobile 降档）----
+  const pelletCount = state.isMobile && AK.pelletCountMobile !== undefined
+    ? AK.pelletCountMobile
+    : (AK.pelletCount ?? 1);
+  const coneHalf = AK.pelletConeHalf ?? 0;
+  const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+  const camPos = camera.getWorldPosition(new THREE.Vector3());
+
   const monsterMeshes = [];
   monsters.forEach(m => {
     if (m.userData.dying) return;
     m.traverse(c => { if (c.isMesh) monsterMeshes.push(c); });
   });
 
-  const intersects = raycaster.intersectObjects(monsterMeshes, false);
-  let hitMonster = null;
-  if (intersects.length > 0) {
-    for (const m of monsters) {
-      if (m.getObjectById(intersects[0].object.id)) { hitMonster = m; break; }
+  const tracerBudget = AK.tracerCount ?? 1;
+  let trailsDrawn = 0;
+  let anyHit = false;
+  let anyHeadshot = false;
+
+  for (let p = 0; p < pelletCount; p++) {
+    const dir = spreadDir.clone();
+    if (coneHalf > 0) {
+      // 弹丸锥面：均匀圆盘采样（与层 1 散布同款几何，独立于移动 inaccuracy）
+      const theta = Math.random() * Math.PI * 2;
+      const r = coneHalf * Math.sqrt(Math.random());
+      dir.addScaledVector(right, Math.cos(theta) * r).addScaledVector(up, Math.sin(theta) * r).normalize();
+    }
+
+    raycaster.set(camPos, dir);
+    const intersects = raycaster.intersectObjects(monsterMeshes, false);
+    let hitMonster = null;
+    if (intersects.length > 0) {
+      for (const m of monsters) {
+        if (m.getObjectById(intersects[0].object.id)) { hitMonster = m; break; }
+      }
+    }
+
+    // 穿墙遮挡：每丸独立判定（与单丸时代同源 rayHitObstacleDistance）
+    const wallT = rayHitObstacleDistance(camPos.x, camPos.y, camPos.z, dir.x, dir.y, dir.z);
+    const blockedByWall = hitMonster !== null && wallT < intersects[0].distance;
+
+    if (hitMonster && !blockedByWall) {
+      const hitPoint = intersects[0].point;
+      const isHeadshot = intersects[0].object.name === 'head';
+      const falloff = falloffMultiplier(intersects[0].distance, AK.damageFalloff);
+      if (falloff > 0) {
+        anyHit = true;
+        // 霰弹 headshotMult=1：打头无加成也不计入爆头统计（无加成意义）
+        if (isHeadshot && AK.headshotMult > 1) anyHeadshot = true;
+        const amount = AK.damage * (isHeadshot ? AK.headshotMult : 1) * falloff;
+        const wasKilled = damageMonster(hitMonster, isHeadshot, amount);
+
+        // 受击白闪（每丸触发，同色重复无害；已死亡不再提亮）
+        if (!wasKilled && !hitMonster.userData.dying) {
+          hitMonster.traverse(c => { if (c.isMesh && c.material && c.material.color) c.material.color.set('#ffffff'); });
+          const savedMonster = hitMonster;
+          setTimeout(() => {
+            if (savedMonster && !savedMonster.userData.dying) {
+              savedMonster.traverse(c => {
+                if (c.isMesh && c.userData && c.userData.originalColor) {
+                  c.material.color.copy(c.userData.originalColor);
+                }
+              });
+            }
+          }, 100);
+        }
+        spawnParticles(hitPoint, isHeadshot ? '#ffd700' : '#ffaa00', isHeadshot ? 18 : 12);
+      }
+      if (trailsDrawn < tracerBudget) { spawnBulletTrail(gunPos, hitPoint); trailsDrawn++; }
+    } else {
+      // 脱靶 / 被墙挡：拖尾止于最近障碍（无遮挡 40m）
+      const trailDist = Math.min(wallT, 40);
+      const missPoint = camPos.clone().add(dir.clone().multiplyScalar(trailDist));
+      if (Number.isFinite(wallT) && trailsDrawn < tracerBudget) {
+        spawnParticles(missPoint, '#9aa5b1', 6);
+      }
+      if (trailsDrawn < tracerBudget) { spawnBulletTrail(gunPos, missPoint); trailsDrawn++; }
     }
   }
 
-  // 穿墙修复：以相机射线为基准（与野怪命中距离同源）求最近障碍遮挡距离，
-  // 障碍比野怪更近时子弹被墙挡住，不再隔墙判定命中。遮挡作用于偏移后的弹道。
-  const camPos = raycaster.ray.origin;
-  const wallT = rayHitObstacleDistance(camPos.x, camPos.y, camPos.z,
-    spreadDir.x, spreadDir.y, spreadDir.z);
-  const blockedByWall = hitMonster !== null && wallT < intersects[0].distance;
-
-  if (hitMonster && !blockedByWall) {
-    const hitPoint = intersects[0].point;
-    const isHeadshot = intersects[0].object.name === 'head';
-    const wasKilled = damageMonster(hitMonster, isHeadshot);
-
-    // 命中统计与计分（连击：连续命中累加，脱靶清零）
+  // ---- 统计口径：一次开火 = 一个单元（M4③ 决策，保护 M0 标定的评级阈值口径）----
+  // 任一丸命中 → shotsHit/combo/score 各 +1；爆头计数只对有爆头加成的武器（AK/步枪）
+  if (anyHit) {
     state.shotsHit++;
     state.combo++;
     if (state.combo > state.maxCombo) state.maxCombo = state.combo;
     state.score += SCORE_PER_HIT;
-    if (isHeadshot) {
+    if (anyHeadshot) {
       state.headshots++;
       state.score += SCORE_PER_HEADSHOT;
     }
-
-    spawnParticles(hitPoint, isHeadshot ? '#ffd700' : '#ffaa00', isHeadshot ? 18 : 12);
-    if (isHeadshot) playHeadshotSound(); else playHitSound();
-    showHitMarker(isHeadshot);
-    spawnBulletTrail(gunPos, hitPoint);
-
-    // Flash the monster briefly white, then restore original colors
-    // 已死亡（材质转透明）的野怪不再闪烁，否则会把它从淡出中"提亮"回来
-    if (!wasKilled && !hitMonster.userData.dying) {
-      hitMonster.traverse(c => { if (c.isMesh && c.material && c.material.color) c.material.color.set('#ffffff'); });
-      const savedMonster = hitMonster;
-      setTimeout(() => {
-        if (savedMonster && !savedMonster.userData.dying) {
-          savedMonster.traverse(c => {
-            if (c.isMesh && c.userData && c.userData.originalColor) {
-              c.material.color.copy(c.userData.originalColor);
-            }
-          });
-        }
-      }, 100);
-    }
+    showHitMarker(anyHeadshot);
+    if (anyHeadshot) playHeadshotSound(); else playHitSound();
   } else {
     state.combo = 0;   // 脱靶打断连击
-    // 弹道拖尾止步于最近障碍（无遮挡时 40m），不再视觉上穿墙
-    const trailDist = Math.min(wallT, 40);
-    const missPoint = camPos.clone().add(spreadDir.clone().multiplyScalar(trailDist));
-    if (Number.isFinite(wallT)) {
-      spawnParticles(missPoint, '#9aa5b1', 6);   // 撞墙碎屑反馈
-    }
-    spawnBulletTrail(gunPos, missPoint);
   }
 
   playGunshot();
