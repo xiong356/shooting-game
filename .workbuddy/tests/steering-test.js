@@ -75,7 +75,7 @@ function build(obstacles, steering) {
                   'MONSTER_DETOUR_MARGIN',
                   'MONSTER_BLOCKED_ADVANCE_MIN', 'MONSTER_AVOID_STRENGTH',
                   'MONSTER_PROBE_RADIUS', 'CRAB_TURN_RATE', 'CRAB_BOUNDS',
-                  'CRAB_RUSH_MAX', 'CRAB_HOP_TIME', 'CRAB_HOP_SPEED']
+                  'CRAB_RUSH_MAX', 'CRAB_HOP_TIME', 'CRAB_HOP_SPEED', 'CRAB_HOP_RANGE']
     .map(function (n) { return 'const ' + n + ' = ' + grabConst(SRC, n) + ';'; })
     .join('\n');
   // CRAB_CONFIG 真身在 js/config/levels.js（ESM export），抽取右值内联求值（§9 参数落位于彼）
@@ -364,7 +364,9 @@ console.log('=== 组 11：迅捷蟹转向钝验收（§9 蟹群×绕行算法 / 
   }
   const rushT = cornerRushTime();
   console.log('  贴角 15m 突进到贴脸 ' + rushT.toFixed(2) + 's');
-  ok(rushT >= 2.5, '【关键 §9】贴角突进 ≥2.5s（后跳节奏窗口存在）', rushT.toFixed(2));
+  // §9 验收 playtest 调整（2026-09-28）：后跳改为只在 4m 威胁圈内触发（中程后撤观感差），
+  // 突进时间从 2.78s 降至 ~2.3s；反应窗口仍由「全程可见的突进 + 0.3s 扑击前摇」提供
+  ok(rushT >= 2.0, '【关键 §9】贴角突进 ≥2.0s（playtest 调整后口径；原 2.5s）', rushT.toFixed(2));
   ok(rushT < 8, '【对照】蟹最终确实能贴脸（窗口≠追不上）', rushT.toFixed(2));
 }
 

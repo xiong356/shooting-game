@@ -3673,17 +3673,17 @@ function updateRangedAttack(monster, ud, dist, dt) {
 
 // --- 迅捷蟹（§5.3：Z 字突进 → 扑击 → 后跳，三段都有位移预警）---
 const CRAB_TURN_RATE = 120 * Math.PI / 180; // 转向角速度上限（rad/s）：转向半径 v/ω ≈ 3.8m——横向滑步能甩掉的几何来源
-const CRAB_RUSH_MAX = 0.8;         // 单段突进时长上限（秒）——到点强制后跳。0.8s 使 §9 贴角验收
-                                   // （15m→贴脸 ≥2.5s）落在 2.7s 左右；1.4s 只能跑到 2.2s 不达标
-const CRAB_HOP_TIME = 0.3;         // 后跳时长（=玩家的脱战窗口，§5.3）
-const CRAB_HOP_SPEED = 5.3;        // 后跳速度（0.3s × 5.3 ≈ 1.6m 拉开）
+const CRAB_RUSH_MAX = 0.8;         // 单段突进时长上限（秒）——到点是否后跳由距离决定（见 HOP_RANGE）
+const CRAB_HOP_TIME = 0.25;        // 后跳时长（=玩家的脱战窗口；playtest 调整，原 0.3s）
+const CRAB_HOP_SPEED = 6.4;        // 后跳速度（0.25s × 6.4 ≈ 1.6m 拉开，跳距不变）
+const CRAB_HOP_RANGE = 4;          // 触发后跳的距离门限（m）——只在威胁圈内后跳；
+                                   // 中远距离纯突进不后撤（playtest 反馈：远处后退观感怪异）
 const CRAB_POUNCE_RANGE = 1.6;     // 进入扑击的距离门限
 const CRAB_POUNCE_HIT_RANGE = 1.4; // 扑击首帧判伤距离
 const CRAB_POUNCE_WINDUP = 0.3;    // 蓄力前摇（压低身体=位移预警，P2）
 const CRAB_POUNCE_TIME = 0.25;     // 扑击时长
 const CRAB_POUNCE_SPEED = 10;      // 扑击速度（0.25s × 10 = 2.5m 扑程）
-const CRAB_POUNCE_COOLDOWN = 1.2;  // 扑击间隔（§5.3 原 2s；playtest 调整：贴脸攻速——
-                                   // 4 只围脸 ≈ 每秒 10 伤，正是 §5.3「威胁来自数量」的本意）
+const CRAB_POUNCE_COOLDOWN = 0.8;  // 扑击间隔（§5.3 原 2s；playtest 两轮调整 2→1.2→0.8：贴脸攻速）
 const CRAB_LEAN_WINDUP = -0.25;    // 蓄力后坐姿态（rad）
 const CRAB_LEAN_LUNGE = 0.2;       // 扑击前倾姿态（rad）
 const CRAB_BOUNDS = { x: 25.6, zMin: -45.6, zMax: 11.6 };  // 蟹不出可玩区（半径 0.35 + 余量）
@@ -3764,10 +3764,15 @@ function stepCrabChase(pos, ud, playerX, playerZ, dt) {
   pos.x = Math.max(-CRAB_BOUNDS.x, Math.min(CRAB_BOUNDS.x, pos.x));
   pos.z = Math.max(CRAB_BOUNDS.zMin, Math.min(CRAB_BOUNDS.zMax, pos.z));
 
-  // 单段突进到点 → 强制后跳（防无限直线冲；§9 贴角 ≥2.5s 验收的节奏来源）
+  // 单段突进到点 → 仅在威胁圈内后跳（中远距离不后撤——playtest 反馈远处后退观感怪异），
+  // 重置计时继续突进；近身的后跳节奏窗口由扑击循环提供
   if (ud.crabT >= CRAB_RUSH_MAX) {
-    ud.crabState = 'hop';
-    ud.crabT = 0;
+    if (distNow <= CRAB_HOP_RANGE) {
+      ud.crabState = 'hop';
+      ud.crabT = 0;
+    } else {
+      ud.crabT = 0;   // 远场：继续突进
+    }
   }
 }
 
