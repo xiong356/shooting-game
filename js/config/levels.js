@@ -36,13 +36,13 @@ export const LEVELS = [
     parTime: 48, maxAlive: 8, reward: { unlock: 3 } },
   { id: 3, name: '野区窄道', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
     spawns: [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }], layout: 'variantA',
-    parTime: 63, maxAlive: 8, reward: { unlock: 4 } },   // weapon:'shotgun' M4 补入（§4 L3 通关奖励）
+    parTime: 63, maxAlive: 8, reward: { unlock: 4, weapon: 'shotgun' } },
   { id: 4, name: '蟹群来袭', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
     spawns: [{ type: 'crab', count: 4 }, { type: 'red', count: 3 }, { type: 'blue', count: 2 }], layout: 'variantA',
     parTime: 65, maxAlive: 8, reward: { unlock: 5 } },
   { id: 5, name: '暗影先锋', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
     spawns: [{ type: 'eliteRed', count: 1 }, { type: 'red', count: 3 }, { type: 'blue', count: 3 }], layout: 'variantB',
-    parTime: 74, maxAlive: 8, reward: { unlock: 6 } },
+    parTime: 74, maxAlive: 8, reward: { unlock: 6, weapon: 'rifle' } },
 ];
 
 // §6 评级阈值常量（S/A/B/F）。命中率门 = 标定中位数 ± offset（M0 标定 n=14），
@@ -84,6 +84,8 @@ export function gradeFor(stats, level) {
 // ---- schema 取值域 ----
 // 怪种：红/蓝（现有）+ 蟹/精英红/精英蓝（M3）；'boss' 不入 spawns（§4.1 Boss 关 adds 自管）。
 const SPAWN_TYPES = ['red', 'blue', 'crab', 'eliteRed', 'eliteBlue'];
+// 武器 id（M4① 定枪收紧：§8.1「reward.weapon 枚举 M4 定枪时收紧」）
+const WEAPON_IDS = ['ak47', 'shotgun', 'rifle'];
 
 // ---- 场地布局预设（§5.2 布局即数据，M2①）----
 // 关卡行 layout 字段引用此处预设名；game.js applyLayout 按 descriptor 重建障碍组。
@@ -254,8 +256,12 @@ export function validateLevels(levels) {
       errors.push(at + '.reward 必须是对象');
     } else {
       if (lv.reward.unlock !== undefined && !isPosInt(lv.reward.unlock)) errors.push(at + '.reward.unlock 必须是正整数');
-      if (lv.reward.weapon !== undefined && (typeof lv.reward.weapon !== 'string' || lv.reward.weapon.length === 0)) {
-        errors.push(at + '.reward.weapon 必须是非空字符串');
+      if (lv.reward.weapon !== undefined) {
+        if (typeof lv.reward.weapon !== 'string' || lv.reward.weapon.length === 0) {
+          errors.push(at + '.reward.weapon 必须是非空字符串');
+        } else if (!WEAPON_IDS.includes(lv.reward.weapon)) {
+          errors.push(at + '.reward.weapon 非法（取值：' + WEAPON_IDS.join('|') + '）');
+        }
       }
       if (lv.reward.unlock === undefined && lv.reward.weapon === undefined) errors.push(at + '.reward 至少含 unlock 或 weapon 之一');
     }

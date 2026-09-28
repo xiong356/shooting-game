@@ -40,5 +40,67 @@ export const WEAPONS = {
       radius: 0.018,        // 光束半径 (m)，8 段圆管避免低段数的「三角棱面」观感
       fade: 0.22            // 到达落点后淡出时长 (s)
     }
+  },
+  // ---- M4① 霰弹枪「裂空」（§5.4：蟹群/贴脸的答案；L3 通关解锁）----
+  shotgun: {
+    id: 'shotgun',
+    name: '裂空',
+    // ---- 伤害 / 射速 / 弹匣 / 换弹（§5.4 表）----
+    damage: 9,              // 每丸基础伤害（独立判定）
+    headshotMult: 1,        // 爆头不加成（§5.4：每丸恒 9 伤）
+    fireInterval: 0.8,      // 泵动节奏
+    magSize: 6,
+    reloadTime: 2.2,
+    // ---- 层 1：移动 inaccuracy（§8.0 迁移清单定值）----
+    spreadPerSpeed: 0.10,
+    spreadAirMult: 3.0,
+    // ---- 层 2：后坐 + spray pattern（数值为设计占位 ⚗️ playtest 观察）----
+    recoilPerShot: 0.03,    // 一泵一响：单发垂直后坐 ≈ AK 2.5 倍
+    recoilYawPerShot: 0.005,
+    recoilMaxPitch: 0.35,
+    recoilMaxYaw: 0.06,
+    sprayPattern: [],       // 空数组 = 发射时跳过 yaw 累加（§8.0：判 pattern.length === 0）
+    // ---- 弹丸 / 射程衰减 / 曳光（§5.4 弹丸散布规格）----
+    pelletCount: 8,
+    pelletCountMobile: 6,   // 移动端性能降档（§9 霰弹×移动端帧率风险行）
+    pelletConeHalf: 0.0698, // 4°（rad）：3m 处散布半径 ≈0.21m
+    damageFalloff: { start: 12, end: 20 },  // 0-12m 全伤，12-20m 线性归零，>20m 不判伤
+    tracerCount: 3,         // 8 丸曳光合并 ≤3 条（视觉足够、性能可控）
+    tracer: {
+      speed: 100,
+      length: 7,
+      radius: 0.018,
+      fade: 0.22
+    }
+  },
+  // ---- M4① 射手步枪「穿云」（§5.4：精英/Boss 的答案；L5 通关解锁）----
+  rifle: {
+    id: 'rifle',
+    name: '穿云',
+    // ---- 伤害 / 射速 / 弹匣 / 换弹（§5.4 表）----
+    damage: 85,
+    headshotMult: 2.5,      // 爆头 ×2.5 = 212（§5.4）
+    fireInterval: 0.5,
+    magSize: 8,
+    reloadTime: 1.8,
+    // ---- 层 1：移动 inaccuracy（§8.0 迁移清单定值）----
+    spreadPerSpeed: 0.03,
+    spreadAirMult: 2.0,
+    // ---- 层 2：后坐 + spray pattern（数值为设计占位 ⚗️ playtest 观察）----
+    recoilPerShot: 0.014,
+    recoilYawPerShot: 0.005,
+    recoilMaxPitch: 0.32,
+    recoilMaxYaw: 0.06,
+    sprayPattern: [0, 0.5, -0.6, 0.8],   // 4 发小图案（§8.0：步枪 = 4 元素小数组）
+    // ---- 弹丸 / 射程衰减 / 曳光 ----
+    pelletCount: 1,
+    damageFalloff: null,    // 无衰减
+    tracerCount: 1,
+    tracer: {
+      speed: 100,
+      length: 7,
+      radius: 0.018,
+      fade: 0.22
+    }
   }
 };
