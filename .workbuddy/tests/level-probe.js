@@ -137,6 +137,24 @@ const ok = (cond, label, extra) => {
   ok(l5m.length === 7, 'L5 刷怪总数 7（精英红1+红3+蓝3）', l5m.length);
   ok(l5m.filter(t => t === 'eliteRed').length === 1, 'L5 含 1 只精英红', l5m);
 
+  // ---- 3d. M4 武器授予与切枪链路 ----
+  await evalJS('window.__SNAPSHOT__.loadLevel(3)');
+  await sleep(500);
+  await evalJS('window.__SNAPSHOT__.cheatKillAll()');
+  await sleep(3000);   // 结算写盘（applyLevelResult 同事务发枪）
+  const weaponsState = await evalJS('JSON.stringify(window.__SNAPSHOT__.weapons())').then(s => JSON.parse(s));
+  ok(weaponsState.owned.includes('shotgun'), 'L3 通关 → 存档同事务授予霰弹枪（§7）', weaponsState.owned);
+  await evalJS('window.__SNAPSHOT__.loadLevel(4)');   // 回 playing 态才能切枪
+  await sleep(500);
+  await evalJS('window.__SNAPSHOT__.switchWeapon("shotgun")');
+  await sleep(700);   // 0.4s 切枪动画
+  const afterSwitch = await evalJS('JSON.stringify({ current: window.__SNAPSHOT__.weapons().current, ammo: window.__SNAPSHOT__().currentAmmo })').then(s => JSON.parse(s));
+  ok(afterSwitch.current === 'shotgun' && afterSwitch.ammo === 6, '切霰弹 → 武器名/弹匣 6', afterSwitch);
+  await evalJS('window.__SNAPSHOT__.switchWeapon("ak47")');
+  await sleep(700);
+  const backAk = await evalJS('JSON.stringify({ current: window.__SNAPSHOT__.weapons().current, ammo: window.__SNAPSHOT__().currentAmmo })').then(s => JSON.parse(s));
+  ok(backAk.current === 'ak47' && backAk.ammo === 30, '切回 AK → 30 发（弹药分存记忆）', backAk);
+
   // ---- 4. 阵亡路径：L2 挂机等死 → F + 不写盘 ----
   let engaged = false;
   for (let i = 0; i < 10; i++) {
@@ -149,7 +167,7 @@ const ok = (cond, label, extra) => {
     }
   }
   ok(engaged, 'L2 有怪刷进警戒区（挂机可被击杀）');
-  const revBefore = afterReload.revision;
+  const revBefore = (await evalJS('JSON.stringify(window.__SNAPSHOT__.saveRead().save)').then(s => JSON.parse(s))).revision;   // 阵亡前基准（含 3d 授予写盘）
   for (let i = 0; i < 25; i++) {
     await sleep(3000);
     const s = await snap();

@@ -213,6 +213,17 @@ async function freshModule(relPath, tag, initialStorage) {
     // （default 两道 0.3m 纵隔断）；横放仅旋转向、数学同路，不重复建组。
   }
 
+  console.log('=== 组 11：武器奖励配置（M4① §5.4）===');
+  {
+    ok(L.LEVELS[2].reward.weapon === 'shotgun', 'L3 通关奖励 = 霰弹枪「裂空」', L.LEVELS[2].reward);
+    ok(L.LEVELS[4].reward.weapon === 'rifle', 'L5 通关奖励 = 射手步枪「穿云」', L.LEVELS[4].reward);
+    // 枚举收紧：非法武器 id 被 validateLevels 拦截（WEAPON_IDS）
+    const bad = JSON.parse(JSON.stringify(L.LEVELS));
+    bad[0].reward.weapon = 'bazooka';
+    ok(L.validateLevels(bad).some(e => e.includes('reward.weapon')), '非法武器 id 被 schema 拦截（WEAPON_IDS 收紧）');
+    ok(L.validateLevels(L.LEVELS).length === 0, '合法配置仍全数通过');
+  }
+
   console.log('');
   console.log('结果: ' + pass + ' 通过 / ' + fail + ' 失败');
   process.exit(fail > 0 ? 1 : 0);
