@@ -104,3 +104,19 @@ export const WEAPONS = {
     }
   }
 };
+
+/**
+ * 射程衰减系数（M4③ §5.4）：≤start 全伤 → start~end 线性归零 → >end 为 0。
+ * 纯函数与武器参数同住配置层（同 gradeFor 之于 levels.js 的先例）——零依赖、
+ * node 门禁可直接 import（spread-test 组 5 边界验收），game.js 经 import 使用。
+ * falloff 为 null（AK/步枪）时恒 1。
+ * @param {number} dist 弹丸飞行距离（m）
+ * @param {{start:number, end:number}|null} falloff 武器表的 damageFalloff 字段
+ * @returns {number} 0~1 伤害系数
+ */
+export function falloffMultiplier(dist, falloff) {
+  if (!falloff) return 1;
+  if (dist <= falloff.start) return 1;
+  if (dist >= falloff.end) return 0;
+  return 1 - (dist - falloff.start) / (falloff.end - falloff.start);
+}

@@ -211,7 +211,7 @@ L4 教学负载说明：霰弹枪是 **L3 通关奖励**，L4 开始时玩家已
 - **切枪框架**：模块级 `let AK = WEAPONS.ak47` 语义升级为「当前武器表项」，17 处消费点（伤害/射速/散布/后坐/换弹时长）切枪时自动跟随、零逐点改造；`switchWeapon` = owned 校验（读存档，L3 关内霰弹天然不可用 ✓）+ 打断换弹（cancelReload 现有语义）+ 0.4s 收枪/换模/抬枪动画（复用 shootTimer 节流禁射）+ **弹药分存**（`state.weaponAmmo` 每枪独立记忆，切回不重置；重开对局补给）。
 - **程序化模型**：双管泵动（裂空）与长管瞄具（穿云）纯 Box/Cylinder 组合，muzzle 命名节点供曳光起点；三模型常驻相机、切枪换 visibility。
 - **弹丸循环**：每丸锥面均匀盘采样（独立于移动 inaccuracy）+ 逐丸 raycast/遮挡/衰减；**统计口径 = 一次开火一单元**（shotsFired/shotsHit/combo/score 按开火计，保护 M0 标定的评级阈值口径）；霰弹 headshotMult=1 打头无加成也不计爆头；移动端 pelletCountMobile=6（代价：两发杀蟹）。
-- **falloffMultiplier 纯函数**：≤12m 全伤、12-20m 线性归零、>20m 不判伤（该丸跳过 damageMonster，曳光仍画到落点）——spread-test 组 5 边界验收。
+- **falloffMultiplier 纯函数**（实现于 js/config/weapons.js，node 门禁可 import）：≤12m 全伤、12-20m 线性归零、>20m 不判伤（该丸跳过 damageMonster，曳光仍画到落点）——spread-test 组 5 边界验收。
 - **M4 验收 ✅**：4° 锥 3m 散布盘半径 0.209m < 蟹 hitbox 0.5m → 8/8 必中，8×9=72 ≥ 68 **一发必杀**（spread-test 组 6）；收紧预案（3° 重测）已验证可行。
 - **设计占位 ⚗️**：霰弹 recoilPerShot 0.03 / 步枪 sprayPattern [0,0.5,-0.6,0.8] 等后坐数值为设计值，进 playtest 观察清单；新枪射击音暂缺采样走合成回退（§10 B 级信号）。
 - **授予链路**：L3/L5 reward.weapon 经 applyLevelResult 同事务写入存档（§7「发武器与 unlock 同事务」）——level-probe 验证通关发枪/切枪/弹药记忆。

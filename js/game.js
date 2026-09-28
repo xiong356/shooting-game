@@ -16,7 +16,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { WEAPONS } from './config/weapons.js';
+import { WEAPONS, falloffMultiplier } from './config/weapons.js';
 import { LEVELS, HP_CALIB_MUL, LAYOUTS, CRAB_CONFIG, gradeFor } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
 import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged, unlockAll } from './save.js';
@@ -2975,17 +2975,6 @@ function getGunWorldPosition() {
   const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(fpsWeapon.getWorldQuaternion(new THREE.Quaternion()));
   worldPos.add(forward.multiplyScalar(0.5));
   return worldPos;
-}
-
-/**
- * 射程衰减系数（M4③ §5.4）：≤start 全伤 → start~end 线性归零 → >end 为 0。
- * 纯函数（spread-test 抽取验收）。falloff 为 null（AK/步枪）时恒 1。
- */
-function falloffMultiplier(dist, falloff) {
-  if (!falloff) return 1;
-  if (dist <= falloff.start) return 1;
-  if (dist >= falloff.end) return 0;
-  return 1 - (dist - falloff.start) / (falloff.end - falloff.start);
 }
 
 function shoot() {
