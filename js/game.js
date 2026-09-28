@@ -21,9 +21,10 @@ import { LEVELS, HP_CALIB_MUL, LAYOUTS, CRAB_CONFIG, gradeFor } from './config/l
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
 import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged, unlockAll } from './save.js';
 
-// 当前武器参数（M0.5②：per-weapon 数值唯一真源在 js/config/weapons.js）。
-// 现阶段只有 AK，M4 切枪框架接入后改为随 currentWeaponId 切换。
-const AK = WEAPONS.ak47;
+// 当前武器参数（M4②：由 const 升级为 let——语义 = 「当前手持武器的表项」，
+// switchWeapon 切枪时整体换绑，全部 AK.* 消费点（伤害/射速/散布/后坐/换弹时长）
+// 自动跟随，无需逐点改造。离线测试抽取源码时注入的 ak47 行为不变。）
+let AK = WEAPONS.ak47;
 
 // 启动标记：index.html 的「启动守卫」靠它判断脚本是否真的跑起来了。
 // 若浏览器拦截了 ES Module（典型场景：用 file:// 直接打开页面），这里不会执行，
@@ -78,6 +79,7 @@ const state = {
   reloadTimer: 0,
   reloadDuration: AK.reloadTime,
   ammoRefilled: false, // 本次换弹是否已补满弹药（补弹发生在插弹匣那一刻，不是换弹结束）
+  weaponAmmo: { ak47: AK.magSize },   // 每把已拥有武器的当前弹匣（M4②：切枪分存，切回不重置）
   isPointerLocked: false,
   isMobile: false,
   lastTime: 0,
@@ -1262,6 +1264,10 @@ const SFX_FILES = {
   'ak47/magOut': 'assets/sfx/mag-out.wav',
   'ak47/magIn':  'assets/sfx/mag-in.wav',
   'ak47/bolt':   'assets/sfx/bolt-click.mp3',
+  // M4① 新枪射击音：采样文件暂缺 → playWeaponSfx 返回 false 自动回退合成音
+  // （听感不达标进 §10 B 级信号：排期补采样或调合成参数）
+  'shotgun/shot': 'assets/sfx/shotgun-shot.wav',
+  'rifle/shot':   'assets/sfx/rifle-shot.wav',
 };
 
 /**
@@ -1300,6 +1306,25 @@ const WEAPON_SFX = {
     shotVolume:  0.5,
     mechVolume:  0.55,
     pitchJitter: [0.96, 1.04],
+  },
+  // M4① 新枪：射击采样暂缺回退合成音；换弹机制音复用现有采样
+  shotgun: {
+    shot:        'shotgun/shot',
+    magOut:      'ak47/magOut',
+    magIn:       'ak47/magIn',
+    bolt:        'ak47/bolt',
+    shotVolume:  0.6,
+    mechVolume:  0.55,
+    pitchJitter: [0.94, 1.02],
+  },
+  rifle: {
+    shot:        'rifle/shot',
+    magOut:      'ak47/magOut',
+    magIn:       'ak47/magIn',
+    bolt:        'ak47/bolt',
+    shotVolume:  0.5,
+    mechVolume:  0.55,
+    pitchJitter: [0.97, 1.03],
   },
 };
 
@@ -1747,6 +1772,10 @@ window.addEventListener('keydown', (e) => {
   if (e.key.toLowerCase() === 'r' && state.status === 'playing') {
     input.reloadPressed = true;
   }
+  // M4② 数字键 1/2/3 切枪（§5.4 桌面键位）
+  if (state.status === 'playing' && ['1', '2', '3'].includes(e.key)) {
+    switchWeapon(WEAPON_SLOTS[Number(e.key) - 1]);
+  }
 });
 window.addEventListener('keyup', (e) => {
   keys[e.key.toLowerCase()] = false;
@@ -1929,6 +1958,15 @@ function setupMobileControls() {
     e.preventDefault();
     if (state.status === 'playing') input.reloadPressed = true;
   });
+
+  // Weapon switch button (M4②)：循环下一把 owned 武器
+  const weaponBtn = document.getElementById('mobile-weapon-btn');
+  if (weaponBtn) {
+    weaponBtn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      if (state.status === 'playing') cycleWeapon();
+    });
+  }
 }
 
 function updateJoystick(touch, base, thumb) {
@@ -2662,6 +2700,12 @@ function updateWeaponBob(dt) {
     fpsWeapon.rotation.y += (recoilYaw / AK.recoilMaxYaw) * weaponKick * 0.08; // 水平摆动
   }
 
+  // 切枪动画（M4②）：V 形下沉-抬起的位移偏移（中点最深 0.2m），换绑由 updateWeaponSwitch 负责
+  if (weaponSwitchT > 0) {
+    const t = 1 - weaponSwitchT / WEAPON_SWITCH_TIME;   // 0→1
+    fpsWeapon.position.y -= 0.2 * Math.sin(Math.PI * t);
+  }
+
   // 换弹动作：沿用 bob / 后坐的「基准姿态 + 增量偏移」叠加方式，避免二次赋值打架
   if (state.reloading) {
     const progress = 1 - Math.max(state.reloadTimer, 0) / state.reloadDuration;
@@ -2678,6 +2722,90 @@ function updateWeaponBob(dt) {
 // ============================================
 // FIRST-PERSON WEAPON
 // ============================================
+/**
+ * 霰弹枪「裂空」程序化低模（M4② §5.4：零外部素材）。
+ * 双管 + 机匣 + 泵动护木 + 木托；muzzle 命名节点供 getGunWorldPosition/曳光起点。
+ */
+function createShotgunModel() {
+  const group = new THREE.Group();
+  group.name = 'fpsShotgun';
+
+  const metal = new THREE.MeshStandardMaterial({ color: '#3a3f46', roughness: 0.35, metalness: 0.7 });
+  const wood = new THREE.MeshStandardMaterial({ color: '#6b4a2a', roughness: 0.55, metalness: 0.1 });
+  const dark = new THREE.MeshStandardMaterial({ color: '#241d14', roughness: 0.6, metalness: 0.2 });
+
+  // 双管（沿 -Z 前伸）
+  const barrelGeo = new THREE.CylinderGeometry(0.022, 0.022, 0.46, 8);
+  const barrelL = new THREE.Mesh(barrelGeo, metal);
+  barrelL.rotation.x = Math.PI / 2; barrelL.position.set(-0.026, 0.02, -0.26); group.add(barrelL);
+  const barrelR = new THREE.Mesh(barrelGeo, metal);
+  barrelR.rotation.x = Math.PI / 2; barrelR.position.set(0.026, 0.02, -0.26); group.add(barrelR);
+
+  // 机匣
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.2), metal);
+  receiver.position.set(0, 0, -0.04); group.add(receiver);
+
+  // 泵动护木（射击时可做前后滑动动画的预留节点）
+  const pump = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, 0.15), wood);
+  pump.position.set(0, -0.02, -0.28); pump.name = 'pump'; group.add(pump);
+
+  // 枪托
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.1, 0.2), wood);
+  stock.position.set(0, -0.035, 0.16); stock.rotation.x = 0.12; group.add(stock);
+
+  // 握把
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.09, 0.06), dark);
+  grip.position.set(0, -0.07, 0.05); grip.rotation.x = -0.3; group.add(grip);
+
+  const muzzle = new THREE.Object3D();
+  muzzle.name = 'muzzle'; muzzle.position.set(0, 0.02, -0.5); group.add(muzzle);
+
+  return group;
+}
+
+/**
+ * 射手步枪「穿云」程序化低模（M4②）：长枪管 + 机匣 + 直弹匣 + 简易瞄具。
+ */
+function createRifleModel() {
+  const group = new THREE.Group();
+  group.name = 'fpsRifle';
+
+  const metal = new THREE.MeshStandardMaterial({ color: '#2e343c', roughness: 0.3, metalness: 0.75 });
+  const dark = new THREE.MeshStandardMaterial({ color: '#1a1d22', roughness: 0.5, metalness: 0.3 });
+  const accent = new THREE.MeshStandardMaterial({ color: '#00d4ff', roughness: 0.3, emissive: '#00d4ff', emissiveIntensity: 0.4 });
+
+  // 长枪管
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.34, 8), metal);
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.02, -0.3); group.add(barrel);
+
+  // 消音/制退器
+  const brake = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.07, 8), dark);
+  brake.rotation.x = Math.PI / 2; brake.position.set(0, 0.02, -0.48); group.add(brake);
+
+  // 机匣
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.1, 0.24), metal);
+  receiver.position.set(0, 0, -0.05); group.add(receiver);
+
+  // 直弹匣（下插）
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.14, 0.07), dark);
+  mag.position.set(0, -0.11, -0.02); mag.rotation.x = 0.08; group.add(mag);
+
+  // 枪托
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.09, 0.22), dark);
+  stock.position.set(0, -0.02, 0.17); group.add(stock);
+
+  // 简易瞄具（镜身 + 前后镜片框）
+  const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.12, 8), dark);
+  scope.rotation.x = Math.PI / 2; scope.position.set(0, 0.085, -0.05); group.add(scope);
+  const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.012, 8), accent);
+  lens.rotation.x = Math.PI / 2; lens.position.set(0, 0.085, -0.11); group.add(lens);
+
+  const muzzle = new THREE.Object3D();
+  muzzle.name = 'muzzle'; muzzle.position.set(0, 0.02, -0.52); group.add(muzzle);
+
+  return group;
+}
+
 function createFirstPersonWeapon() {
   const group = new THREE.Group();
 
@@ -3066,6 +3194,95 @@ function cancelReload() {
   state.reloadTimer = 0;
   state.ammoRefilled = false;
   updateReloadUI(0);
+}
+
+// ============================================
+// 切枪框架（M4② §5.4）
+// ============================================
+const WEAPON_SLOTS = ['ak47', 'shotgun', 'rifle'];   // 数字键 1/2/3 与 HUD 槽位顺序
+const WEAPON_SWITCH_TIME = 0.4;   // 切枪动画时长（§5.4：无伤害窗口，不能用来取消后摇）
+
+let weaponSwitchT = 0;            // >0 = 切枪动画剩余时间（收枪 0.2s → 换模 → 抬枪 0.2s）
+let weaponSwitchPending = null;   // 收枪段结束后要换上的武器 id
+let weaponModels = null;          // { ak47, shotgun, rifle }：camera 子节点表（init 装配）
+
+/** 玩家拥有的武器（存档 weapons 列表 ∩ 槽位；L3 关内霰弹未解锁即天然不可切 ✓§4） */
+function ownedWeapons() {
+  return getSave().weapons.filter(w => WEAPON_SLOTS.includes(w));
+}
+
+/** 三把枪的第一人称模型显隐切换（模型常驻 camera，切枪只换 visibility） */
+function setWeaponModelVisible(id) {
+  if (!weaponModels) return;
+  for (const key of Object.keys(weaponModels)) {
+    weaponModels[key].visible = key === id;
+  }
+}
+
+/**
+ * 切枪（§5.4）：owned 校验 → 打断换弹（cancelReload：已插弹匣留满弹，未插 = 白换）
+ * → 0.4s 切枪动画（期间 shootTimer 被顶到 0.4s，天然禁射且不可取消后摇）。
+ * 弹药分存：state.weaponAmmo 每枪独立记忆，切走再切回不重置；重开对局才补给。
+ */
+function switchWeapon(id) {
+  if (state.status !== 'playing') return;
+  if (id === currentWeaponId || weaponSwitchT > 0) return;
+  if (!WEAPON_SLOTS.includes(id)) return;
+  if (!ownedWeapons().includes(id)) return;
+  if (state.reloading) cancelReload();   // §5.4 切枪打断换弹
+  weaponSwitchPending = id;
+  weaponSwitchT = WEAPON_SWITCH_TIME;
+  shootTimer = Math.max(shootTimer, WEAPON_SWITCH_TIME);   // 切枪期禁射（复用射速节流）
+  canShoot = false;
+}
+
+/** 切枪动画中点：真正换绑武器参数/模型/弹药镜像（收枪段结束后） */
+function applyWeaponSwitch(id) {
+  state.weaponAmmo[currentWeaponId] = state.currentAmmo;   // 旧枪弹匣存回
+  currentWeaponId = id;
+  AK = WEAPONS[id];                                        // 当前武器参数整体换绑（17 处消费点自动跟随）
+  state.maxAmmo = AK.magSize;
+  state.currentAmmo = state.weaponAmmo[id] ?? AK.magSize;
+  state.reloadDuration = AK.reloadTime;
+  state.ammoRefilled = false;
+  fpsWeapon = weaponModels[id];
+  setWeaponModelVisible(id);
+  updateAmmoUI();
+  renderWeaponSlots();
+}
+
+/** 推进切枪动画：收枪下沉 → 中点换绑 → 抬枪复位（姿态偏移由 updateWeaponBob 消费） */
+function updateWeaponSwitch(dt) {
+  if (weaponSwitchT <= 0) return;
+  weaponSwitchT -= dt;
+  if (weaponSwitchPending && weaponSwitchT <= WEAPON_SWITCH_TIME / 2) {
+    applyWeaponSwitch(weaponSwitchPending);
+    weaponSwitchPending = null;
+  }
+  if (weaponSwitchT <= 0) {
+    weaponSwitchT = 0;
+    weaponSwitchPending = null;
+  }
+}
+
+/** HUD 槽位条：1 AK / 2 裂空 / 3 穿云（owned 亮、未拥有灰、当前高亮） */
+function renderWeaponSlots() {
+  const owned = ownedWeapons();
+  WEAPON_SLOTS.forEach((id, i) => {
+    const el = document.getElementById('weapon-slot-' + (i + 1));
+    if (!el) return;
+    el.classList.toggle('owned', owned.includes(id));
+    el.classList.toggle('current', currentWeaponId === id);
+  });
+}
+
+/** 移动端切枪按钮：循环下一把 owned 武器 */
+function cycleWeapon() {
+  const owned = ownedWeapons();
+  if (owned.length < 2) return;
+  const idx = owned.indexOf(currentWeaponId);
+  const next = owned[(idx + 1) % owned.length];
+  switchWeapon(next);
 }
 
 /**
@@ -3622,6 +3839,11 @@ function updateAmmoUI() {
   } else {
     ammoCurrentEl.classList.remove('low');
   }
+  // M4②：弹匣容量与武器名随当前武器（此前 #ammo-max 是静态文本、从不更新）
+  const maxEl = document.getElementById('ammo-max');
+  const nameEl = document.getElementById('weapon-name');
+  if (maxEl) maxEl.textContent = state.maxAmmo;
+  if (nameEl) nameEl.textContent = AK.name;
 }
 
 function showHitMarker(isHeadshot) {
@@ -3711,10 +3933,24 @@ function startGame(levelId) {
 
   state.status = 'playing';
   state.levelStartTime = performance.now();   // §6 评级时间门基准
-  state.currentAmmo = state.maxAmmo;
+  // M4② 武器补给重置：重开对局 = 全部 owned 武器满弹；当前枪不 owned（防御）则回 ak47
+  state.weaponAmmo = {};
+  for (const w of ownedWeapons()) state.weaponAmmo[w] = WEAPONS[w].magSize;
+  if (!ownedWeapons().includes(currentWeaponId)) {
+    currentWeaponId = 'ak47';
+    AK = WEAPONS.ak47;
+    fpsWeapon = weaponModels.ak47;
+    setWeaponModelVisible('ak47');
+  }
+  state.maxAmmo = AK.magSize;
+  state.currentAmmo = state.weaponAmmo[currentWeaponId] ?? AK.magSize;
+  state.reloadDuration = AK.reloadTime;
   state.reloading = false;
   state.reloadTimer = 0;
   state.ammoRefilled = false;
+  weaponSwitchT = 0;
+  weaponSwitchPending = null;
+  renderWeaponSlots();
   state.redAlive = 0;
   state.blueAlive = 0;
   state.crabAlive = 0;
@@ -3871,10 +4107,16 @@ function endGame(reason) {
 
   document.getElementById('grade-letter').textContent = grade;
 
-  // §7 写入时机：仅过关结算写盘（阵亡不写盘）。发武器（L3/L5）M4 切枪框架落地时接入。
+  // §7 写入时机：仅过关结算写盘（阵亡不写盘）。reward.weapon 授予走同一事务（§7「发武器与
+  // unlock 同事务写入」）；下一局 startGame 的 renderWeaponSlots 会亮起新槽位。
   const nextBtn = document.getElementById('next-btn');
   if (victory) {
-    applyLevelResult(lv.id, { grade, score: state.score, combo: state.maxCombo });
+    applyLevelResult(lv.id, {
+      grade,
+      score: state.score,
+      combo: state.maxCombo,
+      weapons: lv.reward && lv.reward.weapon ? [lv.reward.weapon] : undefined,
+    });
     updateSaveBadge();   // 写降级可能在此刻发生，角标即时反映
     if (nextBtn) nextBtn.classList.toggle('hidden', lv.id >= LEVELS.length);
   } else if (nextBtn) {
@@ -4013,6 +4255,7 @@ function update(dt) {
     }
 
     // Update systems
+    updateWeaponSwitch(cappedDT);   // M4② 切枪动画（推进+中点换绑）
     updateReload(cappedDT);
     updateMovement(cappedDT);
     updateRecoil(cappedDT);
@@ -4205,6 +4448,25 @@ function init() {
   fpsWeapon.userData.basePosition = fpsWeapon.position.clone();
   fpsWeapon.userData.baseRotation = fpsWeapon.rotation.clone();
   camera.add(fpsWeapon);
+
+  // ---- M4② 新枪程序化低模（§5.4：零外部素材）----
+  // 三模型常驻 camera、切枪只换 visibility（各自带 basePosition 快照，bob/切枪姿态按当前模型消费）
+  const shotgunModel = createShotgunModel();
+  shotgunModel.position.set(0.22, -0.2, -0.5);
+  shotgunModel.rotation.set(0, -0.08, 0);
+  shotgunModel.userData.basePosition = shotgunModel.position.clone();
+  shotgunModel.userData.baseRotation = shotgunModel.rotation.clone();
+  camera.add(shotgunModel);
+
+  const rifleModel = createRifleModel();
+  rifleModel.position.set(0.22, -0.2, -0.5);
+  rifleModel.rotation.set(0, -0.08, 0);
+  rifleModel.userData.basePosition = rifleModel.position.clone();
+  rifleModel.userData.baseRotation = rifleModel.rotation.clone();
+  camera.add(rifleModel);
+
+  weaponModels = { ak47: fpsWeapon, shotgun: shotgunModel, rifle: rifleModel };
+  setWeaponModelVisible(currentWeaponId);
   console.log('  Camera children:', camera.children.length);
 
   // Add weapon illumination light to camera
@@ -4344,6 +4606,11 @@ window.__SNAPSHOT__.loadLevel = function (n) { startGame(n); };
 window.__SNAPSHOT__.saveRead  = function () { return { save: getSave(), meta: getSaveMeta() }; };
 window.__SNAPSHOT__.unlockAll = function () { unlockAll(); return getSave(); };
 window.__SNAPSHOT__.gradeFor  = gradeFor;
+// ---- M4 武器探针接口：切枪/授予链路验收 ----
+window.__SNAPSHOT__.weapons = function () {
+  return { current: currentWeaponId, owned: ownedWeapons(), ammo: { ...state.weaponAmmo } };
+};
+window.__SNAPSHOT__.switchWeapon = switchWeapon;
 // 调试专用击杀钩子：§8.1「探针脚本逐关自动验收」需要探针能主动打完一局；
 // 只挂在本调试面下（正常游玩不可达）。逐轮头击直至清场（红 225HP 需 4 轮）。
 window.__SNAPSHOT__.cheatKillAll = function () {

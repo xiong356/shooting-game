@@ -391,6 +391,49 @@ html, body {
   line-height: 1;
 }
 
+/* 武器名（M4②）：弹量左侧的小号标识 */
+.weapon-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 2px;
+  margin-right: 10px;
+  text-transform: uppercase;
+}
+
+/* 武器槽位条（M4②）：数字键提示，owned 亮 / 未拥有灰 / 当前粉高亮 */
+#weapon-slots {
+  position: absolute;
+  bottom: calc(18px + var(--safe-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.weapon-slot {
+  padding: 4px 12px;
+  background: rgba(8, 12, 18, 0.6);
+  border: 1px solid var(--border-subtle);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  clip-path: polygon(6px 0, 100% 0, calc(100% - 6px) 100%, 0 100%);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.weapon-slot.owned {
+  color: var(--text-secondary);
+}
+
+.weapon-slot.current {
+  color: var(--accent-pink);
+  border-color: var(--accent-pink);
+}
+
 #ammo-current {
   color: var(--text-primary);
 }
@@ -1204,6 +1247,31 @@ html, body {
   font-weight: 700;
   color: var(--accent-blue);
   transition: transform 0.1s ease;
+}
+
+/* 移动端切枪按钮（M4②）：循环下一把 owned 武器 */
+#mobile-weapon-btn {
+  position: absolute;
+  bottom: calc(88px + var(--safe-bottom));
+  right: calc(80px + var(--safe-right));
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 70, 85, 0.15);
+  border: 2px solid rgba(255, 70, 85, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent-pink);
+  transition: transform 0.1s ease;
+}
+
+#mobile-weapon-btn:active {
+  transform: scale(0.92);
 }
 
 #mobile-reload-btn:active {
