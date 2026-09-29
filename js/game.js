@@ -4217,6 +4217,7 @@ function bossActive() {
 
 // --- Boss 姿态/演出常量（设计值，⚗️ playtest 观察清单）---
 const BOSS_ARM_LIFT = -2.2;    // 拍击前摇右臂高举（红怪 -1.2 的放大版）
+const BOSS_ARM_SLAM = 0.35;    // 拍击 strike 段的下劈收角（高举 → 扫过垂直位，招式读得完整）
 const BOSS_LEAN = 0.15;        // 拍击前摇身体前倾（rad）
 const BOSS_ROAR_ARM = -2.6;    // 转场吼叫双臂高举
 const BOSS_ROAR_LEAN = -0.12;  // 吼叫微微后仰（rad）
@@ -4381,6 +4382,9 @@ function updateBoss(monster, ud, dist, dt) {
     return;
   }
   if (ud.bossState === 'slamStrike') {
+    // 下劈：右臂从高举位扫过垂直位（windup 抬臂的回收，前摇/下劈合成完整一击）
+    const swingT = Math.min(ud.bossT / cfg.melee.strike, 1);
+    if (ud.armR) ud.armR.rotation.x = BOSS_ARM_LIFT * (1 - swingT) + BOSS_ARM_SLAM * swingT;
     const dirX = playerPosition.x - monster.position.x;
     const dirZ = playerPosition.z - monster.position.z;
     const len = Math.hypot(dirX, dirZ);
@@ -5335,6 +5339,12 @@ window.__SNAPSHOT__.setPlayerHealth = function (n) {
   state.playerHealth = Math.max(0, Math.min(PLAYER_MAX_HEALTH, n));
   updateHealthUI();
   return state.playerHealth;
+};
+// Boss 传送（截图/近景验证用；正常游玩不可达）
+window.__SNAPSHOT__.teleportBoss = function (x, z) {
+  if (!bossMonster) return false;
+  bossMonster.position.set(x, 0, z);
+  return true;
 };
 // 调试专用击杀钩子：§8.1「探针脚本逐关自动验收」需要探针能主动打完一局；
 // 只挂在本调试面下（正常游玩不可达）。逐轮头击直至清场（红 225HP 需 4 轮）。
