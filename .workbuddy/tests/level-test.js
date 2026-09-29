@@ -164,17 +164,18 @@ async function freshModule(relPath, tag, initialStorage) {
     // 怪种基座 HP：monsters.js import three 无法求值，正则读数字字面量（只读数字，不求值）
     const monstersSrc = fs.readFileSync(path.join(ROOT, 'js/monsters.js'), 'utf8');
     const baseHP = {};
-    for (const m of monstersSrc.matchAll(/^\s{2}(red|blue|crab|eliteRed|eliteBlue):\s*\{ maxHealth: (\d+)/gm)) {
+    for (const m of monstersSrc.matchAll(/^\s{2}(red|blue|crab|eliteRed|eliteBlue|boss):\s*\{ maxHealth: (\d+)/gm)) {
       baseHP[m[1]] = Number(m[2]);
     }
     ok(baseHP.red === 150 && baseHP.blue === 100, '怪种基座读取（红150/蓝100，§2）', baseHP);
     ok(baseHP.crab === 68 && baseHP.eliteRed === 300 && baseHP.eliteBlue === 220,
       'M3 新怪种基座（蟹68/精英红300/精英蓝220，§5.3）', baseHP);
+    ok(baseHP.boss === 6000, 'M5a Boss 基座（主宰 6000，§5.3 独立推导，不吃 k）', baseHP.boss);
 
-    // §4 总表血池列（M3 真身版：L4 蟹×4红×3蓝×2 / L5 精英红+红×3蓝×3）
-    const EXPECTED = [900, 1125, 1485, 1521, 1733];
-    ok(L.LEVELS.length === EXPECTED.length, 'LEVELS 行数 = 5（M1 范围）', L.LEVELS.length);
-    for (let i = 0; i < L.LEVELS.length; i++) {
+    // §4 总表血池列 L1-L6（M3/M5a 真身版；L7 Boss 独立推导不入池断言）
+    const EXPECTED = [900, 1125, 1485, 1521, 1733, 2653];
+    ok(L.LEVELS.length === 7, 'LEVELS 行数 = 7（M5a：L6/L7 落地）', L.LEVELS.length);
+    for (let i = 0; i < EXPECTED.length; i++) {
       const lv = L.LEVELS[i];
       const pre = lv.spawns.reduce((sum, s) => sum + baseHP[s.type] * s.count, 0);
       const pool = pre * lv.hpMul * L.HP_CALIB_MUL;
@@ -182,6 +183,8 @@ async function freshModule(relPath, tag, initialStorage) {
       ok(Math.abs(pool - target) / target <= 0.01,
         'L' + lv.id + ' 血池 ' + Math.round(pool) + ' ≈ ' + target + '（±1%）', { pre, pool, target });
     }
+    const l7 = L.LEVELS[6];
+    ok(l7.spawns.length === 0 && l7.boss !== undefined, 'L7 spawns 空 + boss 字段在场（§4.1 Boss 关豁免）', l7);
   }
 
   console.log('=== 组 10：场地布局预设（M2 §5.2 布局即数据）===');
@@ -208,7 +211,8 @@ async function freshModule(relPath, tag, initialStorage) {
     const layoutOf = id => L.LEVELS[id - 1].layout;
     ok(layoutOf(1) === 'default' && layoutOf(2) === 'default', 'L1/L2 → default');
     ok(layoutOf(3) === 'variantA' && layoutOf(4) === 'variantA', 'L3/L4 → variantA');
-    ok(layoutOf(5) === 'variantB', 'L5 → variantB');
+    ok(layoutOf(5) === 'variantB' && layoutOf(6) === 'variantB', 'L5/L6 → variantB');
+    ok(layoutOf(7) === 'default', 'L7 → default（§4 场地列：现有布局）');
     // 薄隔断推挤覆盖说明：0.3m 薄墙的圆推出/贴墙滑行已由 collision-test 组 7「真实场地坐标」覆盖
     // （default 两道 0.3m 纵隔断）；横放仅旋转向、数学同路，不重复建组。
   }

@@ -142,6 +142,12 @@ const MONSTER_SPECS = {
   eliteRed: { maxHealth: 300, chaseSpeed: 4.5, stopDist: 1.8, meleeDamage: 37.5, scale: 1.3 },
   // 精英蓝：法术坦克——HP×2.2（纯×2 太脆，不足以制造集火决策窗口，§5.3）、伤害×1.5
   eliteBlue: { maxHealth: 220, chaseSpeed: 4.5, stopDist: BLUE_CAST_RANGE, projDamage: 15, scale: 1.3 },
+  // ---- M5a Boss「主宰」（§5.3）----
+  // 数值基座：6000 HP 独立推导（§5.3 脚注†，不吃 HP_CALIB_MUL——game.js spawnBoss 以 mul{hp:1} 生成）；
+  // 追速 3.2 < 红怪 5.0（压迫型坦克，风筝可解，P2）；stopDist 3.4（近战 range 4.0 内收）；
+  // 拍击 35（红怪 25 放大 → 3 掌死）/ 法球 15（精英蓝同伤）；碰撞半径 1.4（大体型 hitbox
+  // 是 §5.3 命中率 65% 推导的来源）。行为参数（拍击节奏/法球/召唤/转场）在 L7 行 boss 字段。
+  boss: { maxHealth: 6000, chaseSpeed: 3.2, stopDist: 3.4, meleeDamage: 35, projDamage: 15, radius: 1.4 },
 };
 
 /**
@@ -391,7 +397,119 @@ const MONSTER_BUILDERS = {
   crab: createCrab,
   eliteRed: createEliteRedBuff,
   eliteBlue: createEliteBlueBuff,
+  boss: createBoss,
 };
+
+/**
+ * 构建 Boss「主宰」（M5a §5.3）——暗曜石巨像：金魔纹 + 猩红核心宝石 + 三叉冠。
+ * 直接按最终尺寸建模（约 7m 高，scale 1 / baseScale 1，不走精英的 setScalar 放大，
+ * 避免血条/死亡动画连乘意外）；体型即 §5.3「hitbox ×3」的视觉来源。
+ * 结构对齐 buildBuffModel 骨架（bodyPivot 俯仰支点 / armL/armR / head / gem / 血条），
+ * 红蓝怪的状态机范式（抬臂/吟唱姿态）在 Boss 状态机里逐字段复用。
+ */
+function createBoss() {
+  const palette = buffPalette({
+    body: '#262b36', bodyEmissive: '#0a0d14',
+    limbs: '#1b1f28', limbsEmissive: '#070a10',
+    shoulder: '#c9a227', shoulderEmissive: '#6b5410',
+    dark: '#12151c',
+    gem: '#ff3b3b', gemEmissive: '#ff2233',
+    rune: '#ffd700', runeEmissive: '#ffb300',
+  });
+
+  const group = new THREE.Group();
+  group.name = 'boss';
+
+  // 躯干 + 金魔纹
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(2.8, 3.6, 1.8), palette.body);
+  torso.position.y = 3.4;
+  torso.castShadow = true;
+  torso.name = 'body';
+  group.add(torso);
+  for (let i = 0; i < 3; i++) {
+    const rune = new THREE.Mesh(new THREE.BoxGeometry(0.16, 2.2, 0.06), palette.rune);
+    rune.position.set(-0.35 + i * 0.35, 3.4, 0.92);
+    rune.name = 'rune';
+    group.add(rune);
+  }
+
+  // 背部尖刺（×4，精英同款布局放大）
+  for (let i = 0; i < 4; i++) {
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.3, 1.6, 6), palette.shoulder);
+    const angle = (i / 4) * Math.PI * 2 + Math.PI / 8;
+    spike.position.set(Math.cos(angle) * 0.9, 3.4, -1.1 + Math.sin(angle) * 0.4);
+    spike.rotation.z = Math.cos(angle) * 0.4;
+    spike.rotation.x = -0.3;
+    spike.name = 'spike';
+    group.add(spike);
+  }
+
+  // 肩甲 + 巨臂 + 拳 + 腕环
+  const shoulderGeo = new THREE.SphereGeometry(1.1, 10, 8);
+  const shoulderL = new THREE.Mesh(shoulderGeo, palette.shoulder); shoulderL.position.set(-2.0, 4.9, 0); shoulderL.castShadow = true; group.add(shoulderL);
+  const shoulderR = new THREE.Mesh(shoulderGeo, palette.shoulder); shoulderR.position.set( 2.0, 4.9, 0); shoulderR.castShadow = true; group.add(shoulderR);
+  const armGeo = new THREE.CylinderGeometry(0.55, 0.55, 2.8, 8);
+  const armL = new THREE.Mesh(armGeo, palette.limbs); armL.position.set(-2.3, 3.1, 0); armL.castShadow = true; armL.name = 'armL'; group.add(armL);
+  const armR = new THREE.Mesh(armGeo, palette.limbs); armR.position.set( 2.3, 3.1, 0); armR.castShadow = true; armR.name = 'armR'; group.add(armR);
+  const fistGeo = new THREE.SphereGeometry(0.65, 8, 6);
+  const fistL = new THREE.Mesh(fistGeo, palette.shoulder); fistL.position.set(-2.3, 1.5, 0); group.add(fistL);
+  const fistR = new THREE.Mesh(fistGeo, palette.shoulder); fistR.position.set( 2.3, 1.5, 0); group.add(fistR);
+  const bracerGeo = new THREE.TorusGeometry(0.65, 0.12, 8, 8);
+  const bracerL = new THREE.Mesh(bracerGeo, palette.gem); bracerL.position.set(-2.3, 2.1, 0); group.add(bracerL);
+  const bracerR = new THREE.Mesh(bracerGeo, palette.gem); bracerR.position.set( 2.3, 2.1, 0); group.add(bracerR);
+
+  // 双腿 + 脚
+  const legGeo = new THREE.CylinderGeometry(0.65, 0.65, 1.6, 8);
+  const legL = new THREE.Mesh(legGeo, palette.limbs); legL.position.set(-0.75, 0.8, 0); legL.castShadow = true; group.add(legL);
+  const legR = new THREE.Mesh(legGeo, palette.limbs); legR.position.set( 0.75, 0.8, 0); legR.castShadow = true; group.add(legR);
+  const footGeo = new THREE.BoxGeometry(0.85, 0.35, 1.2);
+  const footL = new THREE.Mesh(footGeo, palette.dark); footL.position.set(-0.75, 0.18, 0.2); group.add(footL);
+  const footR = new THREE.Mesh(footGeo, palette.dark); footR.position.set( 0.75, 0.18, 0.2); group.add(footR);
+
+  // 腰带
+  const belt = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.14, 8, 16), palette.dark);
+  belt.position.y = 1.7;
+  belt.name = 'belt';
+  group.add(belt);
+
+  // 头 + 三叉冠（主宰的视觉签名）+ 眼睛
+  const head = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), palette.body);
+  head.position.y = 5.9;
+  head.castShadow = true;
+  head.name = 'head';
+  group.add(head);
+  const hornGeo = new THREE.ConeGeometry(0.18, 0.9, 6);
+  for (const hx of [-0.45, 0, 0.45]) {
+    const horn = new THREE.Mesh(hornGeo, palette.shoulder);
+    horn.position.set(hx, 6.95, 0);
+    horn.name = 'horn';
+    group.add(horn);
+  }
+  const eyeGeo = new THREE.SphereGeometry(0.2, 8, 8);
+  const eyeL = new THREE.Mesh(eyeGeo, palette.eye); eyeL.position.set(-0.35, 6.1, 0.76); group.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, palette.eye); eyeR.position.set( 0.35, 6.1, 0.76); group.add(eyeR);
+
+  // 胸口核心宝石（猩红，吟唱/转场时 emissive 渐亮——game.js 复用蓝怪预警语言）
+  const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.7), palette.gem);
+  gem.position.y = 4.2;
+  gem.name = 'gem';
+  group.add(gem);
+
+  // 头顶血条（随 group 无缩放；8m 高的 Boss 配世界尺寸血条）
+  const healthBar = createHealthBar('#ff4655');
+  healthBar.position.y = 8.3;
+  group.add(healthBar);
+
+  // 原始颜色缓存（受击白闪恢复，与 buildBuffModel 同约定）
+  group.traverse(c => {
+    if (c.isMesh && c.material && c.material.color) {
+      c.userData.originalColor = c.material.color.clone();
+    }
+  });
+
+  group.userData = { type: 'boss', gem, bodyColor: '#262b36', maxHealth: 6000, healthBar };
+  return group;
+}
 
 /**
  * 怪种工厂：返回带数值基座与血条的怪物体（未摆位、未入场景——那是 spawnMonsters 的职责）。

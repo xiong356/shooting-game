@@ -2,9 +2,12 @@
 // 关卡配置表（设计文档 §4 总表 / §8.1 schema，§8.0 四文件拆分）
 // ============================================
 // M1①：L1-L5 数据填入（§11 路线图 M1 =「L1-L5 纯数值递增版」）。
-//   - L4/L5 已换 M3 真身（迅捷蟹/精英石像）；L6/L7 M5b/M5a 才实现，届时按 §4 总表追加行（id 自动连续）；
-//   - layout 已按 §4 场地列落地（M2③）：L1/L2 default，L3/L4 variantA（野区窄道），L5 variantB（开阔祭坛）；
-//   - reward.weapon（L3 霰弹枪 / L5 射手步枪）M4 切枪框架落地后补入。
+//   - L4/L5 已换 M3 真身（迅捷蟹/精英石像）；
+//   - layout 已按 §4 场地列落地（M2③）：L1/L2 default，L3/L4 variantA（野区窄道），L5/L6 variantB（开阔祭坛）；
+//   - reward.weapon（L3 霰弹枪 / L5 射手步枪）M4② 切枪框架落地后补入；
+//   - L6/L7 M5a 落地（提前于原 M5b 排期）：validateLevels 强制 id = 下标+1（线性解锁不跳号），
+//     L7 行无法脱离 L6 单独存在——L6 仅是配置行（全怪种已存在），补位队列仍在 M5b
+//     （先例：L4 总数 9 > maxAlive 8 也是先全量刷，见 L4 行注释）。
 // 静态校验：esm-lint 对本表常驻跑 validateLevels + 逐预设 validateLayout（§8.1）。
 
 // §2 全局血池校准系数 k = 187 ÷ 125 ≈ 1.50（M0 标定输出）。
@@ -18,15 +21,20 @@ export const HP_CALIB_MUL = 1.5;
 // 蟹不用 findDetourCorner 强绕行——那会把「转向钝」弱点消掉（§9 蟹群×绕行算法风险行）。
 export const CRAB_CONFIG = { avoidRadius: 1.0, avoidStrength: 8.0 };
 
-// L1-L5 关卡行。血池推导（怪种基座见 js/monsters.js MONSTER_SPECS）：
+// L1-L7 关卡行。血池推导（怪种基座见 js/monsters.js MONSTER_SPECS）：
 //   L1  红×4                      = 600  ×1.0×1.5 =  900（§4 同值）
 //   L2  红×3+蓝×3                 = 750  ×1.0×1.5 = 1125（§4 同值）
 //   L3  红×4+蓝×3                 = 900  ×1.1×1.5 = 1485（§4 同值）
 //   L4  蟹×4+红×3+蓝×2（M3 真身）  = 922  ×1.1×1.5 = 1521（§4 同值；蟹 68×4+450+200）
 //   L5  精英红+红×3+蓝×3（M3 真身）=1050  ×1.1×1.5 = 1733（§4 同值；300+450+300）
-// parTime = §4 纯输出时长 ×8（§6 公式：38=4.8×8 … 74=9.2×8），S 档时间门 = parTime×1.2。
-// reward.unlock 指向下一关；L5 → 6 指向尚不存在的 L6，选关渲染按 LEVELS.length 截断（M5b 追加后自然接上）。
-// 注意：L4 总数 9 > maxAlive 8——补位队列是 M5b 交付，M3 先全量刷（§4.1 排期一致）。
+//   L6  精英红+精英蓝+红×3+蓝×3+蟹×3 = 1474 ×1.2×1.5 = 2653（§4 同值；300+220+450+300+204）
+//   L7  主宰 6000 独立推导（§5.3 脚注†，不吃 k；召唤蟹走 MONSTER_SPECS 蟹基座 × k）
+// parTime = §4 纯输出时长 ×8（§6 公式：38=4.8×8 … 114=14.2×8），S 档时间门 = parTime×1.2。
+// L7 特例：parTime 固定 180（§6 Boss 关不适用 ×8 公式）。
+// parTimeMul（§6 步枪关卡容忍）：L6 起玩家已持有穿云，步枪有效 DPS ≈ AK 的 1/1.5，
+// 故 S 档时间门再 ×1.5；gradeFor 消费（缺省 1）。playtest 若步枪玩家 S 达成率 >20% 可回收。
+// reward.unlock 指向下一关；L7 unlock:7 指向自身（通关后全关可重玩，unlocked 封顶由 save.js 把守）。
+// 注意：L4 总数 9 / L6 总数 11 > maxAlive 8——补位队列是 M5b 交付，先全量刷（§4.1 排期一致）。
 export const LEVELS = [
   { id: 1, name: '峡谷初见', hpMul: 1.0, dmgMul: 1.0, spdMul: 1.0,
     spawns: [{ type: 'red', count: 4 }], layout: 'default',
@@ -43,6 +51,31 @@ export const LEVELS = [
   { id: 5, name: '暗影先锋', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
     spawns: [{ type: 'eliteRed', count: 1 }, { type: 'red', count: 3 }, { type: 'blue', count: 3 }], layout: 'variantB',
     parTime: 74, maxAlive: 8, reward: { unlock: 6, weapon: 'rifle' } },
+  // ---- M5a：L6 毕业考 + L7 Boss 关（§4 总表）----
+  { id: 6, name: '风暴前夕', hpMul: 1.2, dmgMul: 1.2, spdMul: 1.05,
+    spawns: [{ type: 'eliteRed', count: 1 }, { type: 'eliteBlue', count: 1 }, { type: 'red', count: 3 }, { type: 'blue', count: 3 }, { type: 'crab', count: 3 }],
+    layout: 'variantB',
+    parTime: 114, parTimeMul: 1.5, maxAlive: 8, reward: { unlock: 7 } },
+  // L7：Boss「主宰」三阶段（§5.3）。spawns 留空——Boss 不入 spawns（怪种 schema 注释），
+  // startGame 消费 boss 字段单独生成；P3 召唤蟹等阶段 adds 由 Boss 状态机自管（§4.1），
+  // 补位队列不适用 Boss 关。行为参数全部 [PLACEHOLDER]+推导，⚗️ M6 playtest 收口。
+  { id: 7, name: '主宰降临', hpMul: 1.0, dmgMul: 1.0, spdMul: 1.0,
+    spawns: [], layout: 'default',
+    parTime: 180, parTimeMul: 1.5, maxAlive: 8, reward: { unlock: 7 },
+    boss: {
+      // 近战拍击（§5.3 P1：红怪同款放大；伤害走 MONSTER_SPECS.boss.meleeDamage 35）
+      melee: { range: 4.0, hitRange: 4.5, windup: 0.7, strike: 0.2, lungeSpeed: 4, cooldown: 1.6 },
+      // 法球三连（§5.3 P2：蓝怪吟唱放大，0.8s 预警；伤害走 projDamage 15）
+      orb: { chant: 0.8, count: 3, interval: 0.22, speed: 11, radius: 0.45, cooldown: 4.0, range: 20 },
+      // 召唤蟹×3（§5.3 P3：每 20s 一波；存活蟹 ≥6 跳过本波；落位 ≥15m + 1s 光柱预警）
+      summon: { count: 3, interval: 20, firstDelay: 2.5, maxAliveAdds: 6, telegraph: 1.0, minDist: 15 },
+      // 破阶段转场：2s 无敌 + 吼叫震屏 + 玩家回 30 HP（§5.3；heal 30 ⚗️ 满血进 P3 则降 20）
+      transition: { invuln: 2, heal: 30, shakeAmp: 0.12, shakeTime: 0.7 },
+      // 入场演出：光柱 1.5s @(6,-40)（避让 default 中央柱 (0,-35) 的视线遮挡）
+      entrance: { x: 6, z: -40, duration: 1.5 },
+      // 阶段阈值（P1 100-70 / P2 70-40 / P3 40-0；HUD 血条 70%/40% 刻度线同源 §9）
+      phases: [0.7, 0.4],
+    } },
 ];
 
 // §6 评级阈值常量（S/A/B/F）。命中率门 = 标定中位数 ± offset（M0 标定 n=14），
@@ -75,10 +108,41 @@ export function gradeFor(stats, level) {
   const calibrated = GRADE_CONFIG.calibratedAccuracyMedian !== null;
   const sAcc = calibrated ? GRADE_CONFIG.calibratedAccuracyMedian + GRADE_CONFIG.sAccuracyOffset : GRADE_CONFIG.sAccuracyThreshold;
   const aAcc = calibrated ? GRADE_CONFIG.calibratedAccuracyMedian + GRADE_CONFIG.aAccuracyOffset : GRADE_CONFIG.aAccuracyThreshold;
-  const timeOk = stats.elapsedSec <= level.parTime * GRADE_CONFIG.sTimeMul;
+  // parTimeMul（§6 武器差异容忍）：步枪关卡（L6/L7）S 档时间门再 ×1.5，缺省 1
+  const timeOk = stats.elapsedSec <= level.parTime * GRADE_CONFIG.sTimeMul * (level.parTimeMul || 1);
   if (accPct >= sAcc && hsPct >= GRADE_CONFIG.sHeadshotThreshold && timeOk) return 'S';
   if (accPct >= aAcc) return 'A';
   return 'B';
+}
+
+/**
+ * Boss 阶段判定（§5.3 三阶段：P1 100-70% 近战 / P2 70-40% +法球三连 / P3 40-0% +召唤蟹）。
+ * 纯函数与 validateLevels 同住配置层——boss-test 门禁直接 import 本实现，
+ * game.js updateBoss 与 HUD 阶段刻度共用，避免测试与实现漂移。
+ * 边界口径：ratio 恰好落在阈值上算下一阶段（>0.7 才是 P1）——「破阶段」发生在血量
+ * 跌破阈值的瞬间，与 §9 血条 70%/40% 刻度线的视觉分界一致。
+ * @param {number} ratio 血量比 0~1
+ * @param {[number, number]} [phases] 阶段阈值（L7 行 boss.phases，缺省 [0.7, 0.4]）
+ * @returns {1|2|3}
+ */
+export function bossPhaseFor(ratio, phases) {
+  const p = phases || [0.7, 0.4];
+  if (ratio > p[0]) return 1;
+  if (ratio > p[1]) return 2;
+  return 3;
+}
+
+/**
+ * P3 召唤节流（§5.3，M5a）：存活蟹达到同场上限即跳过本波。
+ * 纯函数与 bossPhaseFor 同住配置层（boss-test 直接 import，game.js bossSummonWave 共用；
+ * Mimosa 钩子拦截测试侧 new Function 抽取——纯函数进配置模块是本项目既定解法，见 gradeFor 先例）。
+ * 边界口径：恰在上限（===）也跳过——严格小于才放行；清蟹速度决定波次密度。
+ * @param {number} aliveAdds 场上存活蟹数
+ * @param {number} maxAliveAdds 召唤蟹同场上限（L7 boss.summon.maxAliveAdds）
+ * @returns {boolean} true = 放行本波召唤
+ */
+export function bossShouldSummon(aliveAdds, maxAliveAdds) {
+  return aliveAdds < maxAliveAdds;
 }
 
 // ---- schema 取值域 ----
@@ -208,13 +272,15 @@ function isPosNum(v) { return typeof v === 'number' && Number.isFinite(v) && v >
  *   id        正整数且 = 下标+1（线性解锁，编号不得跳号）
  *   name      非空字符串（选关卡片显示）
  *   hpMul / dmgMul / spdMul  >0 有限数（§5.1 关卡间相对增量，另叠乘 HP_CALIB_MUL）
- *   spawns    [{ type ∈ SPAWN_TYPES, count 正整数 }]，非空
+ *   spawns    [{ type ∈ SPAWN_TYPES, count 正整数 }]，非空（Boss 关可为空——Boss 不入
+ *             spawns，由 boss 字段承载，§4.1 adds 自管）
  *   layout    ∈ LAYOUTS
  *   parTime   >0 秒数（§6：纯输出时长 × 8；L7 固定 180）
+ *   parTimeMul  可选 >0 有限数（§6 步枪关卡时间门容忍 ×1.5，缺省 1）
  *   maxAlive  正整数（§4.1 同场上限，默认 8 [PLACEHOLDER]）
  *   reward    { unlock?: 正整数, weapon?: 非空字符串 }，至少一项
  *             （§4 奖励列：解锁下一关 / 发武器；weapon id 枚举 M4 定枪时收紧）
- *   boss      仅 id=7 的关卡可携带（M5a 定义内部字段，此处只查归属）
+ *   boss      仅 id=7 可携带，且 L7 必须携带（M5a §5.3，内部 schema 见 validateBossConfig）
  * @param {Array} levels
  * @returns {string[]} 错误描述列表
  */
@@ -235,8 +301,9 @@ export function validateLevels(levels) {
       if (!isPosNum(lv[m])) errors.push(at + '.' + m + ' 必须是 >0 的有限数');
     }
 
-    if (!Array.isArray(lv.spawns) || lv.spawns.length === 0) {
-      errors.push(at + '.spawns 必须是非空数组');
+    // Boss 关 spawns 可为空（Boss 不入 spawns，§4.1）；常规关必须非空
+    if (!Array.isArray(lv.spawns) || (!lv.boss && lv.spawns.length === 0)) {
+      errors.push(at + '.spawns 必须是非空数组（Boss 关可为空）');
     } else {
       lv.spawns.forEach(function (s, j) {
         const sat = at + '.spawns[' + j + ']';
@@ -249,6 +316,10 @@ export function validateLevels(levels) {
     if (!LAYOUTS[lv.layout]) errors.push(at + '.layout 非法（取值：' + Object.keys(LAYOUTS).join('|') + '）');
 
     if (!isPosNum(lv.parTime)) errors.push(at + '.parTime 必须是 >0 的有限数（秒）');
+
+    if (lv.parTimeMul !== undefined && !isPosNum(lv.parTimeMul)) {
+      errors.push(at + '.parTimeMul 必须是 >0 的有限数（§6 步枪关卡时间门容忍，缺省 1）');
+    }
 
     if (!isPosInt(lv.maxAlive)) errors.push(at + '.maxAlive 必须是正整数');
 
@@ -266,7 +337,63 @@ export function validateLevels(levels) {
       if (lv.reward.unlock === undefined && lv.reward.weapon === undefined) errors.push(at + '.reward 至少含 unlock 或 weapon 之一');
     }
 
-    if (lv.boss !== undefined && lv.id !== 7) errors.push(at + '.boss 字段仅 L7（Boss 关）可携带');
+    // Boss 关（M5a §5.3）：boss 字段仅 L7 可携带，且 L7 必须携带
+    if (lv.id === 7) {
+      if (lv.boss === undefined) errors.push(at + '.boss 缺失（L7 为 Boss 关，§5.3）');
+      else validateBossConfig(lv.boss, at + '.boss', errors);
+    } else if (lv.boss !== undefined) {
+      errors.push(at + '.boss 字段仅 L7（Boss 关）可携带');
+    }
   }
   return errors;
+}
+
+/**
+ * L7 boss 字段内部 schema（M5a §5.3）。数值基座（HP/追速/伤害）在 monsters.js
+ * MONSTER_SPECS.boss，此处只管行为参数；全部 [PLACEHOLDER]+推导，校验只把守
+ * 「字段在且为正数」的形态，数值本身由 playtest 收口。
+ */
+function validateBossConfig(b, bat, errors) {
+  if (!b || typeof b !== 'object') { errors.push(bat + ' 必须是对象'); return; }
+  // 近战拍击（P1：红怪同款放大）
+  if (!b.melee || typeof b.melee !== 'object') { errors.push(bat + '.melee 必须是对象'); }
+  else {
+    for (const k of ['range', 'hitRange', 'windup', 'strike', 'lungeSpeed', 'cooldown']) {
+      if (!isPosNum(b.melee[k])) errors.push(bat + '.melee.' + k + ' 必须是 >0 的有限数');
+    }
+  }
+  // 法球三连（P2：蓝怪吟唱放大，0.8s 预警）
+  if (!b.orb || typeof b.orb !== 'object') { errors.push(bat + '.orb 必须是对象'); }
+  else {
+    for (const k of ['chant', 'count', 'interval', 'speed', 'radius', 'cooldown', 'range']) {
+      if (!isPosNum(b.orb[k])) errors.push(bat + '.orb.' + k + ' 必须是 >0 的有限数');
+    }
+  }
+  // 召唤蟹（P3：每 20s 一波，光柱预警后才可行动）
+  if (!b.summon || typeof b.summon !== 'object') { errors.push(bat + '.summon 必须是对象'); }
+  else {
+    for (const k of ['count', 'interval', 'firstDelay', 'maxAliveAdds', 'telegraph', 'minDist']) {
+      if (!isPosNum(b.summon[k])) errors.push(bat + '.summon.' + k + ' 必须是 >0 的有限数');
+    }
+  }
+  // 破阶段转场（2s 无敌 + 吼叫震屏 + 回血 30）
+  if (!b.transition || typeof b.transition !== 'object') { errors.push(bat + '.transition 必须是对象'); }
+  else {
+    for (const k of ['invuln', 'heal', 'shakeAmp', 'shakeTime']) {
+      if (!isPosNum(b.transition[k])) errors.push(bat + '.transition.' + k + ' 必须是 >0 的有限数');
+    }
+  }
+  // 入场演出（光柱落位）
+  if (!b.entrance || typeof b.entrance !== 'object') { errors.push(bat + '.entrance 必须是对象'); }
+  else {
+    if (!isPosNum(b.entrance.duration)) errors.push(bat + '.entrance.duration 必须是 >0 的有限数');
+    if (typeof b.entrance.x !== 'number' || !Number.isFinite(b.entrance.x)) errors.push(bat + '.entrance.x 必须是有限数');
+    if (typeof b.entrance.z !== 'number' || !Number.isFinite(b.entrance.z)) errors.push(bat + '.entrance.z 必须是有限数');
+  }
+  // 阶段阈值（1 > p0 > p1 > 0，降序二元数组；HUD 血条刻度线同源 §9）
+  if (!Array.isArray(b.phases) || b.phases.length !== 2 ||
+      !isPosNum(b.phases[0]) || !isPosNum(b.phases[1]) ||
+      b.phases[0] >= 1 || b.phases[0] <= b.phases[1]) {
+    errors.push(bat + '.phases 必须是降序二元数组（1 > p0 > p1 > 0，如 [0.7, 0.4]）');
+  }
 }

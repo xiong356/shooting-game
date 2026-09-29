@@ -155,6 +155,66 @@ const ok = (cond, label, extra) => {
   const backAk = await evalJS('JSON.stringify({ current: window.__SNAPSHOT__.weapons().current, ammo: window.__SNAPSHOT__().currentAmmo })').then(s => JSON.parse(s));
   ok(backAk.current === 'ak47' && backAk.ammo === 30, '切回 AK → 30 发（弹药分存记忆）', backAk);
 
+  // ---- 3e. M5a Boss 三阶段：L7 入场/转场回血/召唤/胜利链路（§5.3）----
+  // 节奏设计：Boss 出生点距玩家 42m，chaseSpeed 3.2 → 探针窗口内Boss够不到玩家；
+  // 召唤蟹 8m/s 会在 ~2s 后咬人，故 P3 断言后立即击杀 Boss 并清场（setPlayerHealth(100) 兜底）。
+  await evalJS('window.__SNAPSHOT__.loadLevel(7)');
+  await sleep(800);
+  const l7mon = await evalJS('JSON.stringify(window.__SNAPSHOT__().monsters.map(m => m.type))').then(s => JSON.parse(s));
+  ok(l7mon.length === 1 && l7mon[0] === 'boss', 'L7 只刷 Boss（spawns 空，boss 字段承载）', l7mon);
+  const boss0 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  ok(boss0 && boss0.maxHealth === 6000, 'Boss 6000 HP（不吃 k，§2 适用范围条款）', boss0);
+  ok(boss0.state === 'entrance' && boss0.invuln === true, '入场演出期：entrance 态 + 不可受击（§5.3）', boss0);
+
+  await sleep(1500);   // 入场光柱 1.5s
+  const bossIn = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  ok(bossIn.state === 'chase' && bossIn.invuln === false, '入场结束 → chase 态 + 可受击', bossIn);
+
+  // P1 → P2 转场：扣到 69%（4140/6000），玩家 20 血 + 转场回血 30 → 50
+  await evalJS('window.__SNAPSHOT__.setPlayerHealth(20)');
+  await evalJS('window.__SNAPSHOT__.bossDamage(6000 - 4140)');
+  await sleep(300);
+  const bossT2 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  const hpT2 = await evalJS('window.__SNAPSHOT__().playerHealth');
+  ok(bossT2.phase === 2 && bossT2.invuln === true, '69% → P2 转场 + 2s 无敌', bossT2);
+  ok(hpT2 === 50, '转场回血 +30（20 → 50，§5.3 ⚗️ heal 30）', hpT2);
+
+  await sleep(2200);   // 转场 2s 播完
+  const bossC2 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  ok(bossC2.state === 'chase' && bossC2.invuln === false, '转场结束 → chase + 可受击', bossC2);
+
+  // P2 → P3 转场 + 召唤：扣到恰好 40% → phase 3；转场 2s + firstDelay 2.5s 后 3 蟹落位
+  await evalJS('window.__SNAPSHOT__.setPlayerHealth(100)');   // 蟹很快贴脸，回满防探针中途团灭
+  await evalJS('window.__SNAPSHOT__.bossDamage(4140 - 2400)');
+  await sleep(300);
+  const bossT3 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  ok(bossT3.phase === 3 && bossT3.invuln === true, '40% → P3 转场', bossT3);
+  await sleep(5300);   // 转场 2s + firstDelay 2.5s + 落位余量
+  const bossS3 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  ok(bossS3 && bossS3.adds === 3, 'P3 召唤 3 只迅捷蟹（firstDelay 后首波，§5.3）', bossS3);
+
+  // 击杀 Boss → 蟹残留不结算（清 adds 是设计的一部分）；清场 → victory + unlocked 7
+  await evalJS('window.__SNAPSHOT__.bossDamage(6000)');
+  await sleep(2500);   // Boss 死亡动画 1.8s 播完移除
+  const afterBossDeath = await evalJS('JSON.stringify({ s: window.__SNAPSHOT__().status, b: window.__SNAPSHOT__.boss() })').then(s => JSON.parse(s));
+  ok(afterBossDeath.s === 'playing' && afterBossDeath.b === null, 'Boss 死 + 蟹在场 → 不结算，boss() 为 null', afterBossDeath);
+  await evalJS('window.__SNAPSHOT__.cheatKillAll()');
+  await sleep(3000);
+  const l7victory = await evalJS(`JSON.stringify((() => {
+    const q = (id) => document.getElementById(id);
+    return {
+      status: window.__SNAPSHOT__().status,
+      title: q('end-title').textContent,
+      nextVisible: !q('next-btn').classList.contains('hidden'),
+      bossBarHidden: q('boss-bar').classList.contains('hidden'),
+      save: window.__SNAPSHOT__.saveRead().save,
+    };
+  })())`).then(s => JSON.parse(s));
+  ok(l7victory.status === 'ended' && l7victory.title === '通关 · 主宰降临', 'L7 通关结算', l7victory);
+  ok(l7victory.nextVisible === false, 'L7 为最后一关：不显示下一关按钮', l7victory.nextVisible);
+  ok(l7victory.bossBarHidden === true, '结算后 Boss 血条隐藏', l7victory.bossBarHidden);
+  ok(l7victory.save.unlocked === 7, 'L7 通关 → unlocked 7（§7 封顶）', l7victory.save.unlocked);
+
   // ---- 4. 阵亡路径：L2 挂机等死 → F + 不写盘 ----
   let engaged = false;
   for (let i = 0; i < 10; i++) {

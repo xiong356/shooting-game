@@ -117,6 +117,32 @@ async function main() {
     console.log('  [OK] 全部匹配');
   }
 
+  // ---- 规则④：每把武器必须有专属射击合成映射（M5a：杜绝「新枪蹭 AK 声」）----
+  // WEAPON_SYNTH_SHOT 在 game.js（import three 无法在 node 求值），故走源码正则抽取表体，
+  // 与 HTML/JS id 交叉校验同款思路：键名覆盖 = WEAPONS 的全部武器 id。
+  console.log('');
+  console.log('--- 武器射击合成映射覆盖（规则④）---');
+  try {
+    const wmod = await import(pathToFileURL(path.join(TMP, 'weapons.mjs')).href);
+    const weaponIds = Object.keys(wmod.WEAPONS || {});
+    const m = js.match(/const WEAPON_SYNTH_SHOT = \{([\s\S]*?)\};/);
+    if (!m) {
+      console.log('  [FAIL] game.js 缺少 WEAPON_SYNTH_SHOT 映射表');
+      failed++;
+    } else {
+      const noSynth = weaponIds.filter(id => !new RegExp('\\b' + id + '\\s*:', 'm').test(m[1]));
+      if (noSynth.length) {
+        console.log('  [FAIL] WEAPON_SYNTH_SHOT 缺少武器映射: ' + noSynth.join(', '));
+        failed++;
+      } else {
+        console.log('  [OK] WEAPON_SYNTH_SHOT: ' + weaponIds.length + ' 把武器全覆盖（' + weaponIds.join(', ') + '）');
+      }
+    }
+  } catch (e) {
+    console.log('  [FAIL] 规则④求值失败: ' + e.message);
+    failed++;
+  }
+
   process.exit(failed ? 1 : 0);
 }
 

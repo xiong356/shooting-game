@@ -1,12 +1,12 @@
 # 王者峡谷 PvE · 关卡系统设计文档
 
-> 版本 v1.7 · 2026-09-28 · 状态：**M4 完成（切枪框架 + 霰弹「裂空」/ 射手步枪「穿云」：let AK 换绑语义 / 弹药分存 / 打断换弹 / falloff 线性衰减 / 霰弹 §5.4 验收 3m 必杀 68 血蟹 / L3·L5 通关同事务发枪；全门禁 + probe 25 断言绿。M3 怪种 / M2 场地 / M1 元循环同前）**
+> 版本 v1.8 · 2026-09-29 · 状态：**M5a 完成（Boss「主宰」三阶段：入场光柱演出 / P1 近战拍击 → P2 法球三连 → P3 召唤蟹；破阶段转场 = 2s 无敌 + 吼叫震屏 + 回血 30；HUD Boss 血条 70%/40% 刻度线；通用震屏 API triggerShake(intensity, duration) 解耦；L6 行随 L7 提前接入（validateLevels id 连号强制，补位队列仍 M5b）；霰弹/步枪/Boss 专属合成音效 + 采样槽位预留；全门禁 + level-probe L7 组 39/39 绿。M4 切枪框架 / M3 怪种 / M2 场地 / M1 元循环同前）**
 > 读者对象：实现者。目标：30 分钟读完即可开工。
 > 数值标注规则：✅ 有 rationale（含推导）｜`[PLACEHOLDER]` 已填占位值 + 假设 + 验证路径｜⚗️ 必须 playtest 标定后才准进正式 build
 >
 > 符号优先级：同时含推导与待标定的项，以 `[PLACEHOLDER]+推导` 表示「有初值与依据、仍需 playtest 收口」，不叠加 ⚗️。✅ 仅用于已完成推导且无需 playtest 的项。
 >
-> **基线保鲜条款**：§2 现状基线对应 game.js **最新 main HEAD**（编写时为 `ad072ea`，M0.5 拆分后核心数值未变、符号位置见出处列）。核心数值（伤害/射速/移速/散布/血量）
+> **基线保鲜条款**：§2 现状基线对应 game.js **最新 main HEAD**（M5a 落地后 game.js ≈5350 行，M0.5 拆分后核心数值未变、符号位置见出处列）。核心数值（伤害/射速/移速/散布/血量）
 > 每次代码变更须同步 §2——**基线过期 = 本文档所有推导作废重查**。P4 管代码里的数字，这条管文档里的数字。
 
 ---
@@ -28,7 +28,7 @@
 
 ## 2. 现状基线（从 game.js 实测，设计的出发点）
 
-实测行数 ~3800 行（M0.5 拆分后；怪种工厂在 `js/monsters.js`、武器表在 `js/config/weapons.js`、存档层在 `js/save.js`、关卡骨架在 `js/config/levels.js`）。
+实测行数 ~5350 行（M5a 后；怪种工厂在 `js/monsters.js`（含 Boss 主宰）、武器表在 `js/config/weapons.js`、存档层在 `js/save.js`、关卡骨架在 `js/config/levels.js`（L1-L7 全量 + L7 Boss 行为参数））。
 
 | 项 | 数值 | 出处 |
 |---|---|---|
@@ -188,6 +188,17 @@ L4 教学负载说明：霰弹枪是 **L3 通关奖励**，L4 开始时玩家已
 7. 若玩家选用射手步枪：持续 DPS 上限 = 8×85÷5.8 = 117；有效 DPS = 117 × 0.65（大体型命中）× 1.6（爆头系数 1+0.4×1.5）× 0.85 = **≈104**；纯输出 = 6000÷104 ≈ **58s**（相较 AK 39s，比值为 **×1.49**）。时长上浮至 ≈3.5-4.5min，仍在 P3 Boss 关容忍带内。
 ⚗️ 首战若 <2min 或 >5min 则调整 HP。
 
+**M5a 落地注记**（实现于 game.js BOSS 区块 + monsters.js createBoss + levels.js L7 行，验收 level-probe L7 组 12 断言 + boss-test 39 断言）：
+- **结构分工**：数值基座（6000/追速 3.2/拍击 35/法球 15/半径 1.4）在 `MONSTER_SPECS.boss`；行为参数（拍击节奏/法球三连/召唤/转场/入场/phases）内联 L7 行 `boss` 字段（配置即数据，`validateBossConfig` schema 把守）；阶段判定走配置层纯函数 `bossPhaseFor(ratio, phases)`（boss-test 与 updateBoss 共用，阈值边界 0.7/0.4 恰落算破阶段）。
+- **状态机**：entrance（光柱 1.5s @(6,-40)，避让 default 中央柱视线遮挡；期不可行动不可受击）→ chase（stepMonsterChase 复用）→ slamWindup/slamStrike（红怪同款放大：windup 0.7s 抬臂 / strike 0.2s 前冲 4m/s / 冷却 1.6s）→ chant→volley（0.8s 站定+宝石渐亮预警 → 3 弹 0.22s 间隔逐发瞄玩家当前位置，speed 11 / radius 0.45，走位可躲）；破阶段跨 70%/40% 检测打断一切技能进转场（2s 无敌 + 吼叫 + 震屏 0.12m/0.7s + 玩家回 30 HP 封顶 100）。
+- **无敌实现**：`damageMonster` 早退 `ud.invulnerable`（与 dying 守卫并列）——「仅伤害输出无效」口径：命中反馈（曳光/粒子）照常，转场结束自动恢复。
+- **P3 召唤**：20s 计时（首波 firstDelay 2.5s 从转场结束起算）；存活蟹 ≥6 跳波（`bossShouldSummon` 纯函数在配置层，boss-test 验收严格小于口径）；落位玩家 ≥15m 环形点位 + 1s 光柱预警（`spawnHold` 期不可行动——§4.1 P2 条款，Boss 关 adds 不走补位队列）；召唤蟹吃标准蟹基座 ×k（102 HP，霰弹一发/漏 1 丸不死——瞄准纪律保留）。
+- **死亡与胜利**：killMonster 泛型直接用（死亡演出覆写 1.8s/×1.2——不学小怪翻倍膨胀）；Boss 死后场上蟹须清完才触发 `monsters.length===0` victory（清 adds 是 §5.3 DPS 预算的一部分）。
+- **HUD**：2D `#boss-bar`（顶栏下方居中：主宰名牌 + 血条 + 70%/40% 金色刻度线与 `boss.phases` 同源；转场期整条闪烁）。选 2D 而非 3D Sprite 的理由：P3 被蟹群包围时 Boss 常在视野外，压力可读 P2。
+- **震屏解耦**：`startCameraShake()` 无参硬编码重构为 **`triggerShake(intensity, duration)`** 通用 API（强震覆盖基准 + shakeT 取 max 不被弱震截断）；damagePlayer 调用点行为逐位不变（0.06m/0.25s），Boss 吼叫走 API 传参（§11 M5a 交付项）。
+- **音频**：吼叫 = 锯齿波 110→55→70Hz 低通 + 噪声带通双层合成（死亡吼 2.0s/40→45Hz 参数变体）；拍击复用 playSwingSound 加 pitch 参数（0.45 降调）；召唤预警上行滑音（背后刷蟹听得见，P2 多通道）；`SFX_FILES` 已登记 `boss/roar` 采样槽（缺失自动回退合成，M6 可补 wav）。
+- **数值全部 [PLACEHOLDER]+推导 ⚗️**：拍击 35（3 掌死）/法球 15、chase 3.2、转场 heal 30 等待 M6 playtest 收口；§12 #3（6000 HP → 3-3.5min）待实机首战计时验证。
+
 ### 5.4 武器解锁轴（2 把新枪，程序化低模，登记进 `SFX_FILES`/`WEAPON_SFX` 双配置）
 
 | | AK-47（现有） | 霰弹枪「裂空」（L3 通关） | 射手步枪「穿云」（L5 通关） |
@@ -214,7 +225,8 @@ L4 教学负载说明：霰弹枪是 **L3 通关奖励**，L4 开始时玩家已
 - **弹丸循环**：每丸锥面均匀盘采样（独立于移动 inaccuracy）+ 逐丸 raycast/遮挡/衰减；**统计口径 = 一次开火一单元**（shotsFired/shotsHit/combo/score 按开火计，保护 M0 标定的评级阈值口径）；霰弹 headshotMult=1 打头无加成也不计爆头；移动端 pelletCountMobile=6（代价：两发杀蟹）。
 - **falloffMultiplier 纯函数**（实现于 js/config/weapons.js，node 门禁可 import）：≤12m 全伤、12-20m 线性归零、>20m 不判伤（该丸跳过 damageMonster，曳光仍画到落点）——spread-test 组 5 边界验收。
 - **M4 验收 ✅**：4° 锥 3m 散布盘半径 0.209m < 蟹 hitbox 0.5m → 8/8 必中，8×9=72 ≥ 68 **一发必杀**（spread-test 组 6）；收紧预案（3° 重测）已验证可行。
-- **设计占位 ⚗️**：霰弹 recoilPerShot 0.03 / 步枪 sprayPattern [0,0.5,-0.6,0.8] 等后坐数值为设计值，进 playtest 观察清单；新枪射击音暂缺采样走合成回退（§10 B 级信号）。
+- **设计占位 ⚗️**：霰弹 recoilPerShot 0.03 / 步枪 sprayPattern [0,0.5,-0.6,0.8] 等后坐数值为设计值，进 playtest 观察清单。
+- **M5a 音效落地（用户点单并入）**：霰弹/步枪射击从「蹭 AK 的 synthGunshot」升级为**专属合成**——裂空 = 宽噪声低通扫频 + 70→35Hz 次低频 punch + 0.45s 长尾 + 泵动双段 clack（bolt 槽采样映射撤下走合成）；穿云 = 2400Hz 锐利 crack + 紧凑中频 0.2s 干净短尾 + 栓动两段金属声。分发表 `WEAPON_SYNTH_SHOT`/`WEAPON_SYNTH_BOLT`（ak47=基线不变），esm-lint 规则④强制每把武器有映射（照 sprayPattern 先例）；采样槽位保持登记，wav 进 assets/sfx 自动顶替（§10 B 级处置 = 调合成路径已执行，补采样仍可选）。Boss 吼叫/召唤预警合成见 §5.3 M5a 注记。
 - **授予链路**：L3/L5 reward.weapon 经 applyLevelResult 同事务写入存档（§7「发武器与 unlock 同事务」）——level-probe 验证通关发枪/切枪/弹药记忆。
 
 ---
@@ -235,7 +247,7 @@ L4 教学负载说明：霰弹枪是 **L3 通关奖励**，L4 开始时玩家已
 **默认选择：候选 ②（接受 S = 站桩流派）**。理由：候选 ① 的加权公式引入新 magic number 违反 P4；且 S 档本就是"刻意追求"（§6 立场），与 A 档"移动流"分开两条路是可接受的产品分层。M0 标定后若数据显示 60% 以上玩家为达 S 而完全放弃走位（观测点：S 档玩家平均移动距离 < A 档 50%），翻案改候选 ①。（M0 标定：实测命中率高达 70.7%，侧面印证「高命中偏好站桩」，候选 ② 立场暂时成立。）
 - **时间基准公式** ✅：`parTime = 纯输出时长 × 8（实机系数中位）`。S 档时间门 = `parTime × 1.2`（允许 20% 浮动）。例：L1 = 4.8 × 8 = **38.4s ≈ 38s**，S 门 = 46s。初版按公式生成，playtest 后按 P75 玩家用时收紧。⚗️
 - **L7 Boss 关特殊规则**：Boss 实机系数为 ×2.5-3（§5.3 脚注），不适用常规 ×8 公式。L7 `parTime = 180s`（Boss 实机中位 3min），S 门 = 180×1.2 = **216s**（3.6min）。M5a 首战后按 P75 玩家用时收紧。§8.1 `LEVELS[6]` 对应配置：`parTime: 180`。
-- **武器差异容忍**：parTime 基于 AK（最高持续 DPS）计算。射手步枪的有效 DPS 比 AK 低约 **×1.5**（同口径修正后），S 档时间门 `×1.2` 余量不足。故步枪关卡默认配 `parTimeMul: 1.5`；playtest 若步枪玩家 S 达成率 >20% 可回收此修正。
+- **武器差异容忍**：parTime 基于 AK（最高持续 DPS）计算。射手步枪的有效 DPS 比 AK 低约 **×1.5**（同口径修正后），S 档时间门 `×1.2` 余量不足。故步枪关卡默认配 `parTimeMul: 1.5`；playtest 若步枪玩家 S 达成率 >20% 可回收此修正。**M5a 落地**：`gradeFor` 消费 `level.parTimeMul`（缺省 1），L6/L7 行已配 1.5（L7 S 门 = 180×1.2×1.5 = 324s）；esm-lint/level-test/boss-test 三层把守。
 
 **M0 标定已完成 → 启用动态阈值**：`calibratedAccuracyMedian: 70.7` + `sAccuracyOffset: 5` → S 命中率门 = 75.7%；`aAccuracyOffset: -5` → A 命中率门 = 65.7%。`calibratedHeadshotMedian: 32.2`（S 爆头门 40% 另置）。fallback 固定阈值 `sAccuracyThreshold` 仅当 `calibratedAccuracyMedian` 为 null 时回退；当前已填标定值，正常路径不走 fallback。采集口径：`__SNAPSHOT__.calibSummary()`（Σ命中/Σ开枪 池化，n=14）。
 
@@ -361,7 +373,7 @@ const LEVELS = [
 | B | 单关平均尝试次数 | >4 次（难度墙） | 该关血/伤倍率 -10% |
 | B | 玩家不点杀吟唱蓝怪 | 观察 3 人无人优先打蓝 | L2 教学提示补强，不是削蓝怪 |
 | B | AK 解锁新枪后使用率 | <30%（新枪上位替代） | 削新枪，保 AK 地位（§5.4 原则） |
-| B | 新枪合成音听感 | playtest 主观评分 <3/5 | 排期补采样或调合成参数 |
+| B | 新枪合成音听感 | playtest 主观评分 <3/5 | 排期补采样或调合成参数（**M5a 已执行「调合成」路径**：霰弹/步枪/Boss 专属合成落地，§5.4；采样仍可 M6 补） |
 | B | L4 角落死亡占比 | 单次 playtest 中 >50% 死亡发生在场地四角 5m 范围内 | 增加角落安全柱或降蟹速至 7.5（与 §9 同源，详见该行验收标准） |
 | C | S 评级达成率 | >40%（太松）或 <5%（太紧） | 调阈值 ±5-10% |
 | C | 单关实机时长 | 中位数 <2min 或 >6min | 违背 P3，调血池 |
@@ -377,8 +389,8 @@ const LEVELS = [
 | M2 | 场地变体 A/B + 布局配置化 + 清场测试 | 3 套场地 | 0.5 天 | M1 | ✅ 已完成（LAYOUTS 预设 + applyLayout + validateLayout + probe 无残留用例） |
 | M3 | 迅捷蟹 + 精英石像（AI/模型/平衡） | L4/L5 完整版 | 3 天 | M0.5（怪种工厂需先拆出）+ M2（L4/L5 需变体 A/B 场地） | ✅ 已完成（§9 两条验收仿真通过；状态机迁移 game.js 内联，推迟 M5a 统一评估） |
 | M4 | 切枪框架 + 霰弹 + 射手步枪 + 音效登记 | 3 武器 | 1 天 | M0.5（武器表字段化是切枪前提） | ✅ 已完成（let AK 换绑 + falloff + 霰弹验收通过；射击采样暂缺走合成回退） |
-| M5a | Boss 三阶段 AI + 转场机制（无敌/吼叫震屏/回血）+ 通用震屏触发器解耦 | L7 Boss 可战 + 通用震屏触发器 API（triggerShake(intensity, duration)，替换现有硬编码调用） | 3.5 天 | M3（Boss 召唤蟹复用蟹工厂）+ M4（射手步枪对 Boss） | |
-| M5b | 补位队列系统 + L6 毕业考接入 + L7 adds + S 档时间标定 | 全量内容 | 1.5 天 | M5a + M2（场地变体） | |
+| M5a | Boss 三阶段 AI + 转场机制（无敌/吼叫震屏/回血）+ 通用震屏触发器解耦 | L7 Boss 可战 + 通用震屏触发器 API（triggerShake(intensity, duration)，替换现有硬编码调用） | 3.5 天 | M3（Boss 召唤蟹复用蟹工厂）+ M4（射手步枪对 Boss） | ✅ 已完成（§5.3 M5a 落地注记：入场/三阶段/转场/召唤/HUD 血条/震屏 API/专属音效；L6 行随 L7 提前接入——validateLevels id 连号强制，L6 仅配置行、补位队列仍 M5b；probe L7 组 12 断言 + boss-test 39 断言绿；Boss 数值 ⚗️ 待 playtest） |
+| M5b | 补位队列系统 + L6 毕业考接入 + L7 adds + S 档时间标定 | 全量内容 | 1.5 天 | M5a + M2（场地变体） | 范围修订：L6 行已随 M5a 落地（仅配置）——剩余 = **补位队列系统（§4.1）+ L6/L7 压力调优 + S 档时间标定** |
 | M6 | 平衡 pass + playtest 反馈修复 + ⚗️ 项标定收口 | 可发布 build | 1.5 天 | M5b | |
 
 **总计 ≈13.5 天**（含 1.5 天平衡缓冲 + 0.5 天震屏解耦）。M3/M5a 各增 0.5 天因为：蟹的全新排斥力避障系统（非复用 `findDetourCorner`）和 Boss 三阶段状态机（近战拍击 + 法球三连 + 召唤蟹，各需独立参数）是最高实现风险项；M5a 另含 0.5 天将现有 `startCameraShake()` 受击专用接口重构为通用 `triggerShake(intensity, duration)` API。
@@ -390,7 +402,7 @@ const LEVELS = [
 | 1 | ~~玩家命中率 50%~~ → **实测 70.7%** ✅ | 已标定：全局血池 ×k1.5（§2）；§6 阈值按 70.7% 中位重算 | M0 `__SNAPSHOT__.calibSummary()` n=14 完成 |
 | 1b | ~~爆头率 25%~~ → **实测 32.2%** ✅ | 已标定：DPS 系数 1.25→1.322（已并入 k）；S 爆头门上调至 40% | M0 与 #1 同批实测完成 |
 | 2 | 单关实机 = 纯输出 ×6~10 | 关卡数量/血池重排 | M1 后掐表 |
-| 3 | Boss 6000 HP → 2.5-3.5min | Boss HP 与转场回血联动调整 | M5a 首战计时 |
+| 3 | Boss 6000 HP → 2.5-3.5min | Boss HP 与转场回血联动调整 | M5a 首战计时（机制链路已由 probe 验收：入场/转场/召唤/胜利全通；**时长标定待实机首战**） |
 | 4 | 同场上限 8 | 队列长度与节奏 | M5b 压力测试 |
 | 5 | 转场回血 30 | P3 难度感受 | M5a 观察进 P3 血量分布 |
 

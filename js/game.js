@@ -17,7 +17,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS, falloffMultiplier } from './config/weapons.js';
-import { LEVELS, HP_CALIB_MUL, LAYOUTS, CRAB_CONFIG, gradeFor } from './config/levels.js';
+import { LEVELS, HP_CALIB_MUL, LAYOUTS, CRAB_CONFIG, gradeFor, bossPhaseFor, bossShouldSummon } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
 import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged, unlockAll } from './save.js';
 
@@ -47,6 +47,9 @@ const crosshair  = document.getElementById('crosshair');
 const levelSelectScreen = document.getElementById('level-select-screen');
 const levelGrid         = document.getElementById('level-grid');
 const saveBadge         = document.getElementById('save-badge');
+// M5a Boss 血条（§9：主宰名牌 + 血条 + 70%/40% 阶段刻度线）
+const bossBarEl  = document.getElementById('boss-bar');
+const bossFillEl = document.getElementById('boss-health-fill');
 
 // UI elements that update
 const ammoCurrentEl   = document.getElementById('ammo-current');
@@ -665,6 +668,49 @@ const monsters = [];
 // 菜单背景刷怪（观感用，与关卡/评级无关）：沿用 M0 时代「6~8 只红蓝各半」的观感
 const MENU_COMPOSITION = [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }];
 
+// 怪物 id 序列（spawnMonsters 重置；Boss/召唤蟹共用，__SNAPSHOT__ monsters.id 消费）
+let monsterIdSeq = 0;
+
+/**
+ * 野怪 userData 行为字段初始化契约（M5a 自 spawnMonsters 提取）。
+ * 常规刷怪 / Boss 召唤蟹两条刷怪路径必须同构——状态机字段缺失会静默炸裂，
+ * 故收拢为一个函数（数值基座 maxHealth/chaseSpeed 等由怪种工厂先写入，此处覆盖行为层）。
+ */
+function baseMonsterUserData(monster, id, x, z) {
+  return {
+    ...monster.userData,
+    id,
+    alert: false,
+    alertZone: 24,
+    originalPos: new THREE.Vector3(x, 0, z),
+    originalRot: monster.rotation.y,
+    health: monster.userData.maxHealth,
+    dying: false,
+    // 正面被挡住时选定的绕行侧（-1 左 / +1 右 / 0 未选）。
+    // 必须保持到脱离障碍为止，否则每帧重新随机会让野怪左右抖动、原地打转。
+    avoidSide: 0,
+    // 绕行停滞计量（M2 修复「卡墙边缘」）：45 帧窗口的位移基准，见 stepMonsterChase
+    avoidStall: 0,
+    avoidMarkX: 0,
+    avoidMarkZ: 0,
+    // ---- 迅捷蟹字段（M3②；红/蓝怪闲置不用）----
+    crabState: 'rush',
+    crabT: 0,
+    pounceCooldown: 0,
+    crabHeading: Math.random() * Math.PI * 2,   // 初始朝向随机；蟹面向 heading 不 lookAt（转向钝可见）
+    lungeX: 0,
+    lungeZ: 0,
+    // ---- 攻击状态机（红近战 / 蓝远程，见 MONSTER ATTACK 区块）----
+    attackState: 'idle',   // 红怪：'idle' | 'windup' | 'strike'
+    attackT: 0,
+    attackCooldown: 0,
+    meleeHitDone: false,
+    castState: 'idle',     // 蓝怪：'idle' | 'casting' | 'recoil'
+    castT: 0,
+    castCooldown: 0,
+  };
+}
+
 /**
  * 按组成表刷怪（避开玩家出生点）。composition 形如 [{type:'red',count:4}, …]；
  * mul 透传 createMonster（{hp,spd}；dmg 倍率在攻击结算侧 damagePlayer 消费，§5.1）。
@@ -672,8 +718,8 @@ const MENU_COMPOSITION = [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }]
  */
 function spawnMonsters(composition, mul) {
   monsters.length = 0;
+  monsterIdSeq = 0;
   const rng = (min, max) => Math.random() * (max - min) + min;
-  let id = 0;
   for (const group of composition) {
     for (let n = 0; n < group.count; n++) {
       let x, z;
@@ -690,38 +736,7 @@ function spawnMonsters(composition, mul) {
       // 随机初始朝向
       monster.rotation.y = Math.random() * Math.PI * 2;
 
-      monster.userData = {
-        ...monster.userData,
-        id: id++,
-        alert: false,
-        alertZone: 24,
-        originalPos: new THREE.Vector3(x, 0, z),
-        originalRot: monster.rotation.y,
-        health: monster.userData.maxHealth,
-        dying: false,
-      // 正面被挡住时选定的绕行侧（-1 左 / +1 右 / 0 未选）。
-      // 必须保持到脱离障碍为止，否则每帧重新随机会让野怪左右抖动、原地打转。
-      avoidSide: 0,
-      // 绕行停滞计量（M2 修复「卡墙边缘」）：45 帧窗口的位移基准，见 stepMonsterChase
-      avoidStall: 0,
-      avoidMarkX: 0,
-      avoidMarkZ: 0,
-      // ---- 迅捷蟹字段（M3②；红/蓝怪闲置不用）----
-      crabState: 'rush',
-      crabT: 0,
-      pounceCooldown: 0,
-      crabHeading: Math.random() * Math.PI * 2,   // 初始朝向随机；蟹面向 heading 不 lookAt（转向钝可见）
-      lungeX: 0,
-      lungeZ: 0,
-        // ---- 攻击状态机（红近战 / 蓝远程，见 MONSTER ATTACK 区块）----
-        attackState: 'idle',   // 红怪：'idle' | 'windup' | 'strike'
-        attackT: 0,
-        attackCooldown: 0,
-        meleeHitDone: false,
-        castState: 'idle',     // 蓝怪：'idle' | 'casting' | 'recoil'
-        castT: 0,
-        castCooldown: 0,
-      };
+      monster.userData = baseMonsterUserData(monster, monsterIdSeq++, x, z);
 
       // 血条画成满血
       drawHealthBar(monster.userData.healthBar, 1);
@@ -741,7 +756,6 @@ const DEATH_ELEVATION_DEG = 22;    // 抬升仰角 → 水平 2.78m + 垂直 1.1
 const DEATH_SCALE_TO = 2;          // 放大到 2 倍
 // 与玩家可活动范围一致，避免尸体飘出实体墙外
 const DEATH_BOUNDS = { x: 26, zMin: -46, zMax: 12 };
-
 /**
  * 对野怪造成伤害。返回是否因此击杀。
  * @param {boolean} isHeadshot 命中头部（名为 'head' 的 mesh）
@@ -750,7 +764,9 @@ const DEATH_BOUNDS = { x: 26, zMin: -46, zMax: 12 };
  */
 function damageMonster(monster, isHeadshot, amount) {
   const ud = monster.userData;
-  if (ud.dying) return false;
+  // dying：死亡动画中；invulnerable：Boss 入场/转场无敌（M5a §5.3——伤害输出无效，
+  // 但子弹命中反馈（命中粒子/曳光）在 shoot 侧照常发生，与「转场期仅输出无效」口径一致）
+  if (ud.dying || ud.invulnerable) return false;
 
   const dmg = amount !== undefined ? amount : AK.damage * (isHeadshot ? AK.headshotMult : 1);
   ud.health = Math.max(0, ud.health - dmg);
@@ -773,13 +789,14 @@ function damageMonster(monster, isHeadshot, amount) {
   return false;
 }
 
-// 击杀播报名字映射（M3③：蟹/精英加入，避免三元写死）
+// 击杀播报名字映射（M3③：蟹/精英加入，避免三元写死；M5a：Boss）
 const MONSTER_NAMES = {
   red: '猩红石像',
   blue: '蔚蓝石像',
   crab: '迅捷蟹',
   eliteRed: '猩红石像·精英',
   eliteBlue: '蔚蓝石像·精英',
+  boss: '主宰',
 };
 
 /** 判定死亡：停 AI、不可再被击中、立刻从存活数扣除，并启动死亡动画 */
@@ -814,6 +831,10 @@ function killMonster(monster) {
 
   addKillFeed(MONSTER_NAMES[ud.type] ?? '野怪', ud.type);
   playKillSound();
+  if (ud.type === 'boss') {
+    // Boss 死亡吼：主吼叫的更长更低变体（§5.3 死亡演出；与 0.9s→1.8s 的死亡动画对齐）
+    playBossRoar({ duration: 2.0, lowFreq: 40, endFreq: 45 });
+  }
   state.kills++;
   state.score += SCORE_PER_KILL;
   updateUI();   // 存活数要立刻掉，不能等动画播完
@@ -831,17 +852,21 @@ function computeDeathEnd(from, dir) {
   );
 }
 
-/** 推进死亡动画：漂移 + 放大 + 淡出，三者同时进行 */
+/** 推进死亡动画：漂移 + 放大 + 淡出，三者同时进行。
+ *  时长/放大倍率可被 ud.deathDuration/deathScaleTo 覆写（M5a：Boss 用更长更克制的演出，
+ *  缺省 = 全怪通用的 DEATH_DURATION/DEATH_SCALE_TO）。 */
 function updateDeathAnimation(monster, dt) {
   const ud = monster.userData;
+  const duration = ud.deathDuration ?? DEATH_DURATION;
+  const scaleTo = ud.deathScaleTo ?? DEATH_SCALE_TO;
   ud.deathT += dt;
-  const t = Math.min(ud.deathT / DEATH_DURATION, 1);
+  const t = Math.min(ud.deathT / duration, 1);
 
   // 位移与放大：easeOutCubic（起步快、收尾慢，像被击飞后减速）。
   // 乘 baseScale：精英基础体型 ×1.3（绝对 setScalar 会覆盖掉它，M3③）
   const e = 1 - Math.pow(1 - t, 3);
   monster.position.lerpVectors(ud.deathStartPos, ud.deathEndPos, e);
-  monster.scale.setScalar((ud.baseScale ?? 1) * (1 + (DEATH_SCALE_TO - 1) * e));
+  monster.scale.setScalar((ud.baseScale ?? 1) * (1 + (scaleTo - 1) * e));
 
   // 淡出：t² 让后半段加速消失，避免留下"半透明僵尸"
   const opacity = 1 - t * t;
@@ -919,14 +944,17 @@ function playHurtSound() {
   osc.stop(now + 0.22);
 }
 
-/** 红怪挥击破空声：高频噪声感的快速下滑音 */
-function playSwingSound() {
+/**
+ * 红怪挥击破空声：高频噪声感的快速下滑音。
+ * @param {number} [pitch=1] 音高倍率（M5a：Boss 大质量挥击传 0.45 降调；缺省不变，零风险）
+ */
+function playSwingSound(pitch = 1) {
   if (!audioCtx) return;
   const now = audioCtx.currentTime;
   const osc = audioCtx.createOscillator();
   osc.type = 'square';
-  osc.frequency.setValueAtTime(900, now);
-  osc.frequency.exponentialRampToValueAtTime(220, now + 0.12);
+  osc.frequency.setValueAtTime(900 * pitch, now);
+  osc.frequency.exponentialRampToValueAtTime(220 * pitch, now + 0.12);
   const g = audioCtx.createGain();
   g.gain.setValueAtTime(0.0001, now);
   g.gain.exponentialRampToValueAtTime(0.07, now + 0.01);
@@ -953,6 +981,96 @@ function playCastSound() {
   g.connect(audioCtx.destination);
   osc.start(now);
   osc.stop(now + 0.18);
+}
+
+// ---- Boss 音效（M5a：合成先行 + 采样槽位预留）----
+// 采样槽 'boss/roar' 已登记 SFX_FILES（暂缺文件 → playBossSfx 返回 false 回退合成，
+// 与 M4 新枪同款链路）；wav 放进 assets/sfx/ 即自动顶替合成音，无需改代码。
+
+/** Boss 采样槽：与 playWeaponSfx 同款「采样优先」链路，但不绑定 currentWeaponId。 */
+function playBossSfx(slot) {
+  const buffer = audioCtx ? sfxBuffers.get('boss/' + slot) : null;
+  if (!buffer) return false;
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0.6;
+  src.connect(gain);
+  gain.connect(audioCtx.destination);
+  src.start();
+  return true;
+}
+
+/**
+ * Boss 吼叫（入场 + 每次破阶段；死亡吼走更长更低的参数变体）。
+ * 两层合成：锯齿波滑音过低通（胸腔共鸣，playHurtSound 的放大版）
+ * + 噪声带通（沙哑气声）。参数为设计值，⚗️ playtest 听感收口（§10 B 级）。
+ */
+function playBossRoar({ duration = BOSS_ROAR_DURATION, lowFreq = 55, endFreq = 70 } = {}) {
+  if (playBossSfx('roar')) return;
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+
+  // 层 1：锯齿波 110→lowFreq→endFreq 滑音过低通 ~300Hz
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(110, now);
+  osc.frequency.exponentialRampToValueAtTime(lowFreq, now + duration * 0.55);
+  osc.frequency.exponentialRampToValueAtTime(endFreq, now + duration);
+  const lp = audioCtx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 300;
+  const g1 = audioCtx.createGain();
+  g1.gain.setValueAtTime(0.0001, now);
+  g1.gain.exponentialRampToValueAtTime(0.5, now + 0.06);
+  g1.gain.exponentialRampToValueAtTime(0.35, now + duration * 0.6);
+  g1.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+  osc.connect(lp);
+  lp.connect(g1);
+  g1.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + duration);
+
+  // 层 2：噪声带通 ~150Hz（呼吸沙哑感）
+  const noiseLen = Math.floor(audioCtx.sampleRate * duration);
+  const noiseBuf = audioCtx.createBuffer(1, noiseLen, audioCtx.sampleRate);
+  const data = noiseBuf.getChannelData(0);
+  for (let i = 0; i < noiseLen; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-(i / noiseLen) * 3);
+  }
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = noiseBuf;
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 150;
+  bp.Q.value = 0.8;
+  const g2 = audioCtx.createGain();
+  g2.gain.setValueAtTime(0.0001, now);
+  g2.gain.exponentialRampToValueAtTime(0.22, now + 0.08);
+  g2.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+  noise.connect(bp);
+  bp.connect(g2);
+  g2.connect(audioCtx.destination);
+  noise.start(now);
+  noise.stop(now + duration);
+}
+
+/** 召唤预警（P3 光柱期）：上行滑音——背后刷蟹看不见但要听得见（P2 预警多通道）。 */
+function playSummonWarnSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(220, now);
+  osc.frequency.exponentialRampToValueAtTime(660, now + 0.7);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.1, now + 0.1);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.8);
+  osc.connect(g);
+  g.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + 0.85);
 }
 
 // ============================================
@@ -1164,28 +1282,38 @@ function projectileHitPlayer(px, py, pz, playerX, playerZ, radius) {
          py >= 0 && py <= PLAYER_HEIGHT;
 }
 
-/** 从宝石位置朝玩家胸口发射一枚魔法弹（方向发射瞬间定格，直线飞行） */
-function spawnMonsterProjectile(monster) {
+/**
+ * 从宝石位置朝玩家胸口发射一枚魔法弹（方向发射瞬间定格，直线飞行）。
+ * @param {Object} [overrides] Boss 法球覆写（M5a）：{speed, radius, color, glow}；
+ *                              缺省 = 蓝怪口径（BLUE_PROJ_*），精英蓝伤害走 ud.projDamage
+ */
+function spawnMonsterProjectile(monster, overrides = {}) {
   const ud = monster.userData;
+  const speed = overrides.speed ?? BLUE_PROJ_SPEED;
+  const radius = overrides.radius ?? BLUE_PROJ_RADIUS;
+  const color = overrides.color ?? '#3399ff';
+  const glow = overrides.glow ?? '#0066ff';
   const from = ud.gem.getWorldPosition(new THREE.Vector3());
   const to = new THREE.Vector3(playerPosition.x, playerPosition.y + 1.2, playerPosition.z);
   const dir = new THREE.Vector3().subVectors(to, from);
   if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
   dir.normalize();
 
-  const geo = new THREE.SphereGeometry(BLUE_PROJ_RADIUS, 10, 8);
+  const geo = new THREE.SphereGeometry(radius, 10, 8);
   const mat = new THREE.MeshStandardMaterial({
-    color: '#3399ff',
-    emissive: '#0066ff',
+    color,
+    emissive: glow,
     emissiveIntensity: 2.5,
     roughness: 0.2,
   });
   const proj = new THREE.Mesh(geo, mat);
   proj.position.copy(from);
   proj.userData = {
-    velocity: dir.multiplyScalar(BLUE_PROJ_SPEED),
+    velocity: dir.multiplyScalar(speed),
     life: BLUE_PROJ_LIFE,
     damage: ud.projDamage ?? BLUE_CAST_DAMAGE,   // per-type：精英蓝 ×1.5（M3③）
+    radius,   // M5a：Boss 法球 0.45 > 蓝怪 0.35，命中判定按弹径逐弹读取
+    color,
   };
 
   scene.add(proj);
@@ -1203,6 +1331,9 @@ function updateMonsterProjectiles(dt) {
   for (let i = monsterProjectiles.length - 1; i >= 0; i--) {
     const p = monsterProjectiles[i];
     const ud = p.userData;
+    // 弹径/弹色逐弹读取（M5a：Boss 法球 0.45 > 蓝怪 0.35）
+    const radius = ud.radius ?? BLUE_PROJ_RADIUS;
+    const color = ud.color ?? '#3399ff';
 
     ud.life -= dt;
     if (ud.life <= 0) {
@@ -1216,17 +1347,17 @@ function updateMonsterProjectiles(dt) {
     p.position.z += ud.velocity.z * dt;
 
     // 撞障碍 → 爆粒子消失
-    if (projectileHitObstacle(p.position.x, p.position.y, p.position.z, BLUE_PROJ_RADIUS)) {
-      spawnParticles(p.position, '#3399ff', 10);
+    if (projectileHitObstacle(p.position.x, p.position.y, p.position.z, radius)) {
+      spawnParticles(p.position, color, 10);
       disposeProjectile(p);
       monsterProjectiles.splice(i, 1);
       continue;
     }
 
     // 命中玩家 → 扣血 + 爆粒子消失
-    if (projectileHitPlayer(p.position.x, p.position.y, p.position.z, playerPosition.x, playerPosition.z, BLUE_PROJ_RADIUS)) {
+    if (projectileHitPlayer(p.position.x, p.position.y, p.position.z, playerPosition.x, playerPosition.z, radius)) {
       damagePlayer(ud.damage);
-      spawnParticles(p.position, '#3399ff', 10);
+      spawnParticles(p.position, color, 10);
       disposeProjectile(p);
       monsterProjectiles.splice(i, 1);
       continue;
@@ -1239,6 +1370,57 @@ function updateMonsterProjectiles(dt) {
       monsterProjectiles.splice(i, 1);
     }
   }
+}
+
+// ============================================
+// SPAWN TELEGRAPH（生成预警光柱，M5a）
+// ============================================
+// §4.1 P2 条款的视觉件：Boss 入场光柱与召唤蟹的落位预警共用。
+// 半透明空心圆柱，淡入 → 呼吸脉动 → 收束消失；纯视觉，不参与碰撞/遮挡判定。
+const telegraphs = [];
+
+function spawnTelegraph(x, z, { radius = 1, height = 6, color = '#ffd700', duration = 1 } = {}) {
+  const geo = new THREE.CylinderGeometry(radius, radius, height, 24, 1, true);
+  const mat = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, height / 2, z);
+  scene.add(mesh);
+  telegraphs.push({ mesh, t: 0, duration, maxOpacity: 0.45 });
+}
+
+function updateTelegraphs(dt) {
+  for (let i = telegraphs.length - 1; i >= 0; i--) {
+    const tg = telegraphs[i];
+    tg.t += dt;
+    const k = tg.t / tg.duration;
+    if (k >= 1) {
+      scene.remove(tg.mesh);
+      tg.mesh.geometry.dispose();
+      tg.mesh.material.dispose();
+      telegraphs.splice(i, 1);
+      continue;
+    }
+    // 淡入（前 20%）→ 呼吸脉动 → 收束（后 30% 渐灭）
+    const fadeIn = Math.min(k / 0.2, 1);
+    const fadeOut = k > 0.7 ? 1 - (k - 0.7) / 0.3 : 1;
+    tg.mesh.material.opacity = tg.maxOpacity * fadeIn * fadeOut * (0.75 + 0.25 * Math.sin(tg.t * 20));
+  }
+}
+
+/** 清空全部预警光柱（startGame / abandonLevel 与怪物同级的清理）。 */
+function clearTelegraphs() {
+  for (const tg of telegraphs) {
+    scene.remove(tg.mesh);
+    tg.mesh.geometry.dispose();
+    tg.mesh.material.dispose();
+  }
+  telegraphs.length = 0;
 }
 
 // ============================================
@@ -1267,9 +1449,11 @@ const SFX_FILES = {
   'ak47/magIn':  'assets/sfx/mag-in.wav',
   'ak47/bolt':   'assets/sfx/bolt-click.mp3',
   // M4① 新枪射击音：采样文件暂缺 → playWeaponSfx 返回 false 自动回退合成音
-  // （听感不达标进 §10 B 级信号：排期补采样或调合成参数）
+  // （M5a 起新枪有专属合成实现；听感不达标进 §10 B 级信号：排期补采样或调合成参数）
   'shotgun/shot': 'assets/sfx/shotgun-shot.wav',
   'rifle/shot':   'assets/sfx/rifle-shot.wav',
+  // M5a Boss 吼叫采样槽（暂缺文件 → playBossSfx 回退 playBossRoar 合成）
+  'boss/roar': 'assets/sfx/boss-roar.wav',
 };
 
 /**
@@ -1309,12 +1493,13 @@ const WEAPON_SFX = {
     mechVolume:  0.55,
     pitchJitter: [0.96, 1.04],
   },
-  // M4① 新枪：射击采样暂缺回退合成音；换弹机制音复用现有采样
+  // M4① 新枪：射击采样暂缺回退专属合成音（M5a）；换弹 magOut/magIn 复用现有采样。
+  // bolt 槽缺省（泵动/栓动走专属合成 synthPumpSound/synthRifleBoltSound——通用枪机
+  // 采样对泵动枪音色不符；采样补齐后在 SFX_FILES 登记并恢复映射即可）。
   shotgun: {
     shot:        'shotgun/shot',
     magOut:      'ak47/magOut',
     magIn:       'ak47/magIn',
-    bolt:        'ak47/bolt',
     shotVolume:  0.6,
     mechVolume:  0.55,
     pitchJitter: [0.94, 1.02],
@@ -1323,7 +1508,6 @@ const WEAPON_SFX = {
     shot:        'rifle/shot',
     magOut:      'ak47/magOut',
     magIn:       'ak47/magIn',
-    bolt:        'ak47/bolt',
     shotVolume:  0.5,
     mechVolume:  0.55,
     pitchJitter: [0.97, 1.03],
@@ -1390,12 +1574,23 @@ function playWeaponSfx(slot, { volume, pitchRange } = {}) {
   return true;
 }
 
-/** 枪声：优先真实采样，缺失时回退合成 */
+/**
+ * 枪声合成兜底分发（M5a：每枪专属合成，杜绝「新枪蹭 AK 声」）。
+ * 采样优先已在 playWeaponSfx 内完成；此处只按武器挑合成实现。
+ * esm-lint 规则④：WEAPONS 的每把枪都必须在本表有映射（照 sprayPattern 先例）。
+ */
+const WEAPON_SYNTH_SHOT = {
+  ak47: synthGunshot,
+  shotgun: synthShotgunShot,
+  rifle: synthRifleShot,
+};
+
 function playGunshot() {
   if (playWeaponSfx('shot')) return;
-  synthGunshot();
+  (WEAPON_SYNTH_SHOT[currentWeaponId] || synthGunshot)();
 }
 
+/** AK-47（基线，M0 时代实现不动） */
 function synthGunshot() {
   if (!audioCtx) return;
   const now = audioCtx.currentTime;
@@ -1443,6 +1638,100 @@ function synthGunshot() {
   oscGain.connect(audioCtx.destination);
   osc.start(now);
   osc.stop(now + 0.08);
+}
+
+/** 霰弹「裂空」射击（合成）：大口径轰鸣——宽噪声低通扫频 + 次低频 punch + 长尾 ~0.45s。 */
+function synthShotgunShot() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+
+  // 宽噪声主体：低通 1400→180Hz 扫频，衰减比 AK 慢（0.45s 尾音 = 裂空的"宽"）
+  const bufferSize = audioCtx.sampleRate * 0.45;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    const t = i / bufferSize;
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-t * 9) * 0.7;
+  }
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buffer;
+  const lp = audioCtx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(1400, now);
+  lp.frequency.exponentialRampToValueAtTime(180, now + 0.3);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.5, now);
+  g.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+  noise.connect(lp);
+  lp.connect(g);
+  g.connect(audioCtx.destination);
+  noise.start(now);
+  noise.stop(now + 0.45);
+
+  // 次低频 punch：70→35Hz（比 AK 的 120→30 更沉更长，大口径的"顶胸口"感）
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(70, now);
+  osc.frequency.exponentialRampToValueAtTime(35, now + 0.16);
+  const oscGain = audioCtx.createGain();
+  oscGain.gain.setValueAtTime(0.45, now);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+  osc.connect(oscGain);
+  oscGain.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + 0.18);
+}
+
+/** 射手步枪「穿云」射击（合成）：高精度枪声——锐利 crack 瞬态 + 紧凑中频 + 干净短尾。 */
+function synthRifleShot() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+
+  // 锐利瞬态：带通 2400Hz 短噪声（crack——"穿云"的亮与脆）
+  const crackLen = audioCtx.sampleRate * 0.06;
+  const crackBuf = audioCtx.createBuffer(1, crackLen, audioCtx.sampleRate);
+  const crackData = crackBuf.getChannelData(0);
+  for (let i = 0; i < crackLen; i++) {
+    const t = i / crackLen;
+    crackData[i] = (Math.random() * 2 - 1) * Math.exp(-t * 30) * 0.5;
+  }
+  const crack = audioCtx.createBufferSource();
+  crack.buffer = crackBuf;
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 2400;
+  bp.Q.value = 1.2;
+  const cg = audioCtx.createGain();
+  cg.gain.setValueAtTime(0.45, now);
+  cg.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+  crack.connect(bp);
+  bp.connect(cg);
+  cg.connect(audioCtx.destination);
+  crack.start(now);
+  crack.stop(now + 0.07);
+
+  // 紧凑中频主体：比 AK 更快收尾（0.1s），干净不拖尾——步枪的"点名"感
+  const bodyLen = audioCtx.sampleRate * 0.1;
+  const bodyBuf = audioCtx.createBuffer(1, bodyLen, audioCtx.sampleRate);
+  const bodyData = bodyBuf.getChannelData(0);
+  for (let i = 0; i < bodyLen; i++) {
+    const t = i / bodyLen;
+    bodyData[i] = (Math.random() * 2 - 1) * Math.exp(-t * 28) * 0.4;
+  }
+  const body = audioCtx.createBufferSource();
+  body.buffer = bodyBuf;
+  const bp2 = audioCtx.createBiquadFilter();
+  bp2.type = 'bandpass';
+  bp2.frequency.value = 700;
+  bp2.Q.value = 0.8;
+  const bg = audioCtx.createGain();
+  bg.gain.setValueAtTime(0.35, now);
+  bg.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+  body.connect(bp2);
+  bp2.connect(bg);
+  bg.connect(audioCtx.destination);
+  body.start(now);
+  body.stop(now + 0.12);
 }
 
 function playHitSound() {
@@ -1519,11 +1808,11 @@ function playMagInSound() {
   synthMagInSound();
 }
 
-/** 拉枪机上膛（换弹完成同帧触发） */
+/** 拉枪机上膛（换弹完成同帧触发）。合成兜底按武器分发（M5a：霰弹泵动/步枪栓动专属音色）。 */
 function playBoltSound() {
   const w = WEAPON_SFX[currentWeaponId];
   if (playWeaponSfx('bolt', { volume: (w && w.mechVolume) || 0.55, pitchRange: null })) return;
-  synthBoltSound();
+  (WEAPON_SYNTH_BOLT[currentWeaponId] || synthBoltSound)();
 }
 
 /** 拔出弹匣（合成实现） */
@@ -1594,6 +1883,61 @@ function synthBoltSound() {
   gain.connect(audioCtx.destination);
   osc.start(now);
   osc.stop(now + 0.1);
+}
+
+// 机匣操作合成分发（M5a）：ak47 = 基线 synthBoltSound；霰弹/步枪见 WEAPON_SFX 槽位缺省注释
+const WEAPON_SYNTH_BOLT = {
+  ak47: synthBoltSound,
+  shotgun: synthPumpSound,
+  rifle: synthRifleBoltSound,
+};
+
+/** 霰弹「裂空」泵动上膛（合成）：双段 clack——前后两行程噪声爆点，音色微差。 */
+function synthPumpSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  [0, 0.12].forEach((delay, i) => {
+    const at = now + delay;
+    const segLen = audioCtx.sampleRate * 0.06;
+    const segBuf = audioCtx.createBuffer(1, segLen, audioCtx.sampleRate);
+    const segData = segBuf.getChannelData(0);
+    for (let j = 0; j < segLen; j++) {
+      segData[j] = (Math.random() * 2 - 1) * Math.exp(-(j / segLen) * 18);
+    }
+    const seg = audioCtx.createBufferSource();
+    seg.buffer = segBuf;
+    const bp = audioCtx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = i === 0 ? 900 : 700;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.18, at);
+    g.gain.exponentialRampToValueAtTime(0.001, at + 0.07);
+    seg.connect(bp);
+    bp.connect(g);
+    g.connect(audioCtx.destination);
+    seg.start(at);
+    seg.stop(at + 0.08);
+  });
+}
+
+/** 射手步枪「穿云」栓动（合成）：金属上抬 + 后拉两段，比 AK 枪机更亮更机械。 */
+function synthRifleBoltSound() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  [0, 0.09].forEach((delay, i) => {
+    const at = now + delay;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(i === 0 ? 1400 : 1000, at);
+    osc.frequency.exponentialRampToValueAtTime(i === 0 ? 700 : 500, at + 0.05);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.08, at);
+    g.gain.exponentialRampToValueAtTime(0.001, at + 0.06);
+    osc.connect(g);
+    g.connect(audioCtx.destination);
+    osc.start(at);
+    osc.stop(at + 0.08);
+  });
 }
 
 // ---- 脚步声（程序化合成，零素材）----
@@ -2645,12 +2989,13 @@ function updateCamera() {
   const breatheY = BREATH_AMP * (1 - locomotion.moveBlend) * Math.sin(breathPhase);
 
   // 受击抖动：只叠加 position 不改 rotation（与 sway 同款约定，准星与弹道仍一致）。
-  // shakeT 由 update(dt) 递减，这里只消费。
+  // shakeT 由 update(dt) 递减，这里只消费。幅度/时长由 triggerShake 写入
+  // （M5a 通用震屏 API：受击 0.06m/0.25s，Boss 吼叫等强震按参数覆盖）。
   let shakeX = 0, shakeY = 0;
   if (shakeT > 0) {
-    const k = shakeT / HURT_SHAKE_TIME;
-    shakeX = (Math.random() - 0.5) * 2 * HURT_SHAKE_AMP * k;
-    shakeY = (Math.random() - 0.5) * 2 * HURT_SHAKE_AMP * k;
+    const k = shakeT / shakeDur;
+    shakeX = (Math.random() - 0.5) * 2 * shakeAmp * k;
+    shakeY = (Math.random() - 0.5) * 2 * shakeAmp * k;
   }
 
   camera.position.set(
@@ -3421,6 +3766,13 @@ function updateMonsters(dt) {
       continue;
     }
 
+    // 召唤预警期（M5a spawnHold > 0）：怪已落位但不可行动，光柱消失后才激活（§4.1 P2——
+    // 「背后补位 → 落地即冲刺」= 无前摇伤害，直接违反 P2）
+    if (ud.spawnHold > 0) {
+      ud.spawnHold -= dt;
+      continue;
+    }
+
     const dist = monster.position.distanceTo(playerPosition);
 
     const wasAlert = ud.alert;
@@ -3435,19 +3787,21 @@ function updateMonsters(dt) {
         monster.lookAt(playerPosition.x, monster.position.y, playerPosition.z);
       }
 
-      // 攻击状态机（红近战 / 蟹突进 / 蓝远程）。攻击都要求视线通畅（isPathClear），
-      // 隔着掩体时野怪只会继续绕行，不会攻击
+      // 攻击状态机（红近战 / 蟹突进 / Boss 三阶段 / 蓝远程）。攻击都要求视线通畅
+      // （isPathClear），隔着掩体时野怪只会继续绕行，不会攻击
       if (ud.type === 'red') updateMeleeAttack(monster, ud, dist, dt);
       else if (ud.type === 'crab') updateCrab(monster, ud, dist, dt);   // 移动+扑击全权自驱（§5.3 三段式）
+      else if (ud.type === 'boss') updateBoss(monster, ud, dist, dt);   // 移动+技能全权自驱（M5a §5.3，入场/转场期内部自锁）
       else updateRangedAttack(monster, ud, dist, dt);
 
       // 追逐（匀速，保持距离）。碰撞与正面绕行都在 stepMonsterChase 内部。
       // 门控用 shouldChase（距离 + 视线），不是纯距离 —— 理由见该函数的注释。
       // 红怪挥击期间（windup/strike）锁移动，前冲由状态机自己驱动；
-      // 蟹不走 stepMonsterChase（转向钝 + 排斥避障是它的专属弱点设定，§9）
+      // 蟹不走 stepMonsterChase（转向钝 + 排斥避障是它的专属弱点设定，§9）；
+      // Boss 同为自驱（追逐只在 chase 态，技能/转场期站定，P2 可读）
       const meleeLocked = ud.type === 'red' && ud.attackState !== 'idle';
-      const crabSelfDriven = ud.type === 'crab';
-      if (!meleeLocked && !crabSelfDriven && shouldChase(dist, ud.stopDist, monster.position, playerPosition.x, playerPosition.z)) {
+      const selfDriven = ud.type === 'crab' || ud.type === 'boss';
+      if (!meleeLocked && !selfDriven && shouldChase(dist, ud.stopDist, monster.position, playerPosition.x, playerPosition.z)) {
         stepMonsterChase(monster.position, ud, playerPosition.x, playerPosition.z, ud.chaseSpeed, dt);
       }
     } else if (wasAlert) {
@@ -3844,6 +4198,280 @@ function updateCrab(monster, ud, dist, dt) {
 }
 
 // ============================================
+// BOSS 主宰（M5a §5.3：三阶段机制怪，L7 专属）
+// ============================================
+// 数值基座在 MONSTER_SPECS.boss（js/monsters.js）；行为参数在 L7 行 boss 字段
+// （js/config/levels.js，[PLACEHOLDER]+推导 ⚗️ M6 收口）。阶段判定走配置层纯函数
+// bossPhaseFor（boss-test 门禁共用）。
+// 状态机：entrance（光柱入场，不可行动不可受击）→ chase（追击 + 技能发起）
+//   → slamWindup/slamStrike（近战拍击，红怪同款放大）/ chant→volley（法球三连，P2 起）
+//   → transition（破阶段：无敌+吼叫+震屏+玩家回血）；召唤蟹（P3 起）在 chase 计时发起。
+// P1 只教近战、P2 加法球、P3 加召唤——每阶段引入一个已教机制的放大版，不教新东西（P1）。
+
+let bossMonster = null;   // 当前对局 Boss 引用；非 Boss 关恒 null（HUD 血条/探针按此判空）
+
+/** Boss 是否在场且未进入死亡（HUD 血条显示的判据）。 */
+function bossActive() {
+  return !!(bossMonster && !bossMonster.userData.dying);
+}
+
+// --- Boss 姿态/演出常量（设计值，⚗️ playtest 观察清单）---
+const BOSS_ARM_LIFT = -2.2;    // 拍击前摇右臂高举（红怪 -1.2 的放大版）
+const BOSS_LEAN = 0.15;        // 拍击前摇身体前倾（rad）
+const BOSS_ROAR_ARM = -2.6;    // 转场吼叫双臂高举
+const BOSS_ROAR_LEAN = -0.12;  // 吼叫微微后仰（rad）
+const BOSS_GEM_GLOW = 6;       // 吟唱/转场宝石峰值亮度（蓝怪 5 放大——更大体型的预警可读性）
+const BOSS_ROAR_DURATION = 1.2;   // 默认吼叫时长（死亡吼 2.0）
+const BOSS_PROJ_COLOR = '#ff4655'; // Boss 法球弹色（猩红，对齐游戏强调色与 Boss 宝石）
+
+/** 复位 Boss 姿态（身体俯仰/双臂/宝石发光归零）——各状态进出时调用。 */
+function resetBossPose(ud) {
+  if (ud.bodyPivot) ud.bodyPivot.rotation.x = 0;
+  if (ud.armL) ud.armL.rotation.x = 0;
+  if (ud.armR) ud.armR.rotation.x = 0;
+  if (ud.gem) ud.gem.material.emissiveIntensity = 2.5;
+}
+
+/**
+ * 生成 Boss（startGame 消费 L7 行 boss 字段；非 Boss 关空操作）。
+ * 不吃 §2 全局血池校准 k（§2 适用范围条款）——mul 恒 1；落位与光柱时长来自 boss.entrance。
+ */
+function spawnBoss(lv) {
+  bossMonster = null;
+  if (!lv.boss) return;
+  const cfg = lv.boss;
+  const ex = cfg.entrance.x;
+  const ez = cfg.entrance.z;
+
+  const boss = createMonster('boss', { hp: 1, spd: 1 });
+  boss.position.set(ex, 0, ez);
+  boss.userData = {
+    ...baseMonsterUserData(boss, monsterIdSeq++, ex, ez),
+    alert: true,          // 入场即警戒（alertZone 放大到全图，Boss 战全程激活）
+    alertZone: 9999,
+    // ---- Boss 状态机字段 ----
+    bossState: 'entrance',
+    bossT: 0,
+    phase: 1,
+    invulnerable: true,   // 入场演出期不可受击（与转场同款语义，damageMonster 早退）
+    meleeCooldown: 0,
+    castCooldown: 0,
+    castQueue: 0,
+    castTimer: 0,
+    summonTimer: cfg.summon.firstDelay,
+    // 死亡演出覆写（updateDeathAnimation 泛型消费）：更长更克制，不学小怪翻倍膨胀
+    deathDuration: 1.8,
+    deathScaleTo: 1.2,
+  };
+  drawHealthBar(boss.userData.healthBar, 1);
+  scene.add(boss);
+  monsters.push(boss);
+  bossMonster = boss;
+
+  // 入场光柱（吼叫与震屏在入场结束帧，见 updateBoss——光柱先立起来再吼，节奏感）
+  spawnTelegraph(ex, ez, { radius: 2.2, height: 9, color: '#ffd700', duration: cfg.entrance.duration });
+}
+
+/**
+ * 破阶段转场（§5.3）：2s 无敌 + 吼叫震屏 + 玩家回 30 HP。
+ * 无敌走 damageMonster 早退；回血是 Boss 独有机制（「主宰的精华被击碎后释放生命能量」，
+ * 不扩展到其他关卡）；转场期间玩家输入不受限（§5.3「转场期间输入」条款）。
+ * P3 进入时重置召唤计时（firstDelay 从转场结束起算——转场是喘息窗口）。
+ */
+function startBossTransition(ud, cfg, phase) {
+  ud.phase = phase;
+  ud.bossState = 'transition';
+  ud.bossT = 0;
+  ud.invulnerable = true;
+  resetBossPose(ud);
+  playBossRoar();
+  triggerShake(cfg.transition.shakeAmp, cfg.transition.shakeTime);
+  state.playerHealth = Math.min(PLAYER_MAX_HEALTH, state.playerHealth + cfg.transition.heal);
+  updateHealthUI();
+  if (phase >= 3) ud.summonTimer = cfg.summon.firstDelay;
+}
+
+/**
+ * P3 召唤波：蟹×3 落位于玩家 ≥15m 环形点位（§4.1 入场点规则的 Boss 版），
+ * 每只 1s 光柱预警后才可行动（背后刷蟹不构成无前摇伤害，P2）。
+ * 存活蟹 ≥ maxAliveAdds 时跳过本波（计时照常重置——清蟹速度决定波次密度）。
+ */
+function bossSummonWave(ud, cfg) {
+  const aliveAdds = monsters.filter(m => m.userData.type === 'crab' && !m.userData.dying).length;
+  if (!bossShouldSummon(aliveAdds, cfg.summon.maxAliveAdds)) return;
+  for (let n = 0; n < cfg.summon.count; n++) {
+    // 环形随机点位：minDist 起步逐次外扩重试；被边界钳制后仍不足 minDist 的 80% 视为
+    // 退化（§4.1 退化策略），接受钳制点——Boss 关场地开阔，实际几乎不会触发
+    let px = playerPosition.x, pz = playerPosition.z;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const ang = Math.random() * Math.PI * 2;
+      const d = cfg.summon.minDist + attempt * 1.5;
+      px = Math.max(-24, Math.min(24, playerPosition.x + Math.sin(ang) * d));
+      pz = Math.max(-44, Math.min(10, playerPosition.z + Math.cos(ang) * d));
+      if (Math.hypot(px - playerPosition.x, pz - playerPosition.z) >= cfg.summon.minDist * 0.8) break;
+    }
+    const crab = createMonster('crab', { hp: HP_CALIB_MUL, spd: 1 });
+    crab.position.set(px, 0, pz);
+    crab.rotation.y = Math.random() * Math.PI * 2;
+    crab.userData = baseMonsterUserData(crab, monsterIdSeq++, px, pz);
+    crab.userData.spawnHold = cfg.summon.telegraph;
+    drawHealthBar(crab.userData.healthBar, 1);
+    scene.add(crab);
+    monsters.push(crab);
+    spawnTelegraph(px, pz, { radius: 1, height: 3, color: '#ffb347', duration: cfg.summon.telegraph });
+  }
+  playSummonWarnSound();
+}
+
+/**
+ * Boss 状态机（updateMonsters 分发入口；移动全权自驱——追逐只在 chase 态，
+ * 技能/转场期站定，动作可读 P2）。阶段技能优先级：近战 > 法球 > 召唤。
+ */
+function updateBoss(monster, ud, dist, dt) {
+  const cfg = currentLevel().boss;
+  if (!cfg) return;
+  ud.bossT += dt;
+
+  // ---- 入场演出：光柱期不可行动不可受击，结束帧吼叫激活（§5.3）----
+  if (ud.bossState === 'entrance') {
+    if (ud.bossT >= cfg.entrance.duration) {
+      ud.bossState = 'chase';
+      ud.bossT = 0;
+      ud.invulnerable = false;
+      playBossRoar();
+      triggerShake(cfg.transition.shakeAmp, cfg.transition.shakeTime);
+    }
+    return;
+  }
+
+  // ---- 转场：吼叫姿态（双臂高举+宝石全亮）+ 无敌倒计时 ----
+  if (ud.bossState === 'transition') {
+    const t = Math.min(ud.bossT / cfg.transition.invuln, 1);
+    if (ud.armL) ud.armL.rotation.x = BOSS_ROAR_ARM * t;
+    if (ud.armR) ud.armR.rotation.x = BOSS_ROAR_ARM * t;
+    if (ud.bodyPivot) ud.bodyPivot.rotation.x = BOSS_ROAR_LEAN * t;
+    if (ud.gem) ud.gem.material.emissiveIntensity = 2.5 + (BOSS_GEM_GLOW - 2.5) * t;
+    if (ud.bossT >= cfg.transition.invuln) {
+      ud.bossState = 'chase';
+      ud.bossT = 0;
+      ud.invulnerable = false;
+      resetBossPose(ud);
+    }
+    return;
+  }
+
+  // ---- 破阶段检测：血量跨阈值即转场（打断进行中的技能——破阶段瞬间压力归零，可读）----
+  const phase = bossPhaseFor(ud.health / ud.maxHealth, cfg.phases);
+  if (phase > ud.phase) {
+    startBossTransition(ud, cfg, phase);
+    return;
+  }
+
+  // ---- 近战拍击：windup（抬臂前摇）→ strike（前冲+首帧判伤）——红怪同款放大 ----
+  if (ud.bossState === 'slamWindup') {
+    const t = Math.min(ud.bossT / cfg.melee.windup, 1);
+    if (ud.armR) ud.armR.rotation.x = BOSS_ARM_LIFT * t;
+    if (ud.bodyPivot) ud.bodyPivot.rotation.x = BOSS_LEAN * t;
+    if (ud.bossT >= cfg.melee.windup) {
+      ud.bossState = 'slamStrike';
+      ud.bossT = 0;
+      ud.meleeHitDone = false;
+      playSwingSound(0.45);   // 降调破空声（大质量挥击）
+    }
+    return;
+  }
+  if (ud.bossState === 'slamStrike') {
+    const dirX = playerPosition.x - monster.position.x;
+    const dirZ = playerPosition.z - monster.position.z;
+    const len = Math.hypot(dirX, dirZ);
+    if (len > 1e-6) {
+      const nx = dirX / len;
+      const nz = dirZ / len;
+      monster.position.x += nx * cfg.melee.lungeSpeed * dt;
+      monster.position.z += nz * cfg.melee.lungeSpeed * dt;
+      resolveObstacleCollisions(monster.position, ud.radius);
+    }
+    if (!ud.meleeHitDone) {
+      ud.meleeHitDone = true;
+      if (dist <= cfg.melee.hitRange &&
+          isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+        damagePlayer(ud.meleeDamage);
+      }
+    }
+    if (ud.bossT >= cfg.melee.strike) {
+      ud.bossState = 'chase';
+      ud.bossT = 0;
+      ud.meleeCooldown = cfg.melee.cooldown;
+      resetBossPose(ud);
+    }
+    return;
+  }
+
+  // ---- 法球三连：chant（0.8s 站定+宝石渐亮预警）→ volley（逐发瞄玩家当前位置，
+  //      0.22s 间隔——瞄准可被走位打破，跑动就是解法，P2）----
+  if (ud.bossState === 'chant') {
+    const t = Math.min(ud.bossT / cfg.orb.chant, 1);
+    if (ud.bodyPivot) ud.bodyPivot.rotation.x = BLUE_CAST_LEAN_BACK * t;
+    if (ud.armL) ud.armL.rotation.x = BLUE_CAST_ARM_LIFT * t;
+    if (ud.armR) ud.armR.rotation.x = BLUE_CAST_ARM_LIFT * t;
+    if (ud.gem) ud.gem.material.emissiveIntensity = 2.5 + (BOSS_GEM_GLOW - 2.5) * t;
+    if (ud.bossT >= cfg.orb.chant) {
+      ud.bossState = 'volley';
+      ud.bossT = 0;
+      ud.castQueue = cfg.orb.count;
+      ud.castTimer = 0;
+    }
+    return;
+  }
+  if (ud.bossState === 'volley') {
+    ud.castTimer -= dt;
+    if (ud.castQueue > 0 && ud.castTimer <= 0) {
+      spawnMonsterProjectile(monster, {
+        speed: cfg.orb.speed,
+        radius: cfg.orb.radius,
+        color: BOSS_PROJ_COLOR,
+        glow: '#ff2233',
+      });
+      ud.castQueue--;
+      ud.castTimer = cfg.orb.interval;
+    }
+    if (ud.castQueue <= 0) {
+      ud.bossState = 'chase';
+      ud.bossT = 0;
+      ud.castCooldown = cfg.orb.cooldown;
+      resetBossPose(ud);
+    }
+    return;
+  }
+
+  // ---- chase：追击 + 技能发起 ----
+  ud.meleeCooldown -= dt;
+  ud.castCooldown -= dt;
+  if (ud.phase >= 3) ud.summonTimer -= dt;
+
+  if (shouldChase(dist, ud.stopDist, monster.position, playerPosition.x, playerPosition.z)) {
+    stepMonsterChase(monster.position, ud, playerPosition.x, playerPosition.z, ud.chaseSpeed, dt);
+  }
+
+  if (dist <= cfg.melee.range && ud.meleeCooldown <= 0 &&
+      isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+    ud.bossState = 'slamWindup';
+    ud.bossT = 0;
+    return;
+  }
+  if (ud.phase >= 2 && dist <= cfg.orb.range && ud.castCooldown <= 0 &&
+      isPathClear(monster.position.x, monster.position.z, playerPosition.x, playerPosition.z)) {
+    ud.bossState = 'chant';
+    ud.bossT = 0;
+    return;
+  }
+  if (ud.phase >= 3 && ud.summonTimer <= 0) {
+    bossSummonWave(ud, cfg);
+    ud.summonTimer = cfg.summon.interval;   // 跳波（达上限）也重置——节奏稳定可预期
+  }
+}
+
+// ============================================
 // UI HELPERS
 // ============================================
 function updateUI() {
@@ -3866,6 +4494,18 @@ function updateUI() {
   if (alertEl) {
     const anyAlert = monsters.some(m => m.userData.alert && !m.userData.dying);
     alertEl.classList.toggle('hidden', !anyAlert);
+  }
+
+  // Boss 血条（M5a §9）：仅 Boss 在场时显示；转场期整条闪烁（阶段刻度 70%/40% 静态常显）。
+  // 放在 updateUI 每帧驱动——扣血平滑过渡走 CSS transition，转场结束自动摘 blink。
+  if (bossBarEl) {
+    const show = bossActive() && state.status === 'playing';
+    bossBarEl.classList.toggle('hidden', !show);
+    if (show) {
+      const bud = bossMonster.userData;
+      if (bossFillEl) bossFillEl.style.width = (bud.health / bud.maxHealth * 100) + '%';
+      bossBarEl.classList.toggle('blink', bud.bossState === 'transition');
+    }
   }
 }
 
@@ -3901,7 +4541,10 @@ function showHitMarker(isHeadshot) {
 // PLAYER HEALTH
 // ============================================
 // 玩家血量与受击反馈。无无敌帧、无回血（高难度定位）；血量归零 → 本局结束（endGame('death')）。
-let shakeT = 0;          // 受击相机抖动剩余时长（updateCamera 消费，update 递减）
+// （M5a 例外：Boss 转场回血 30 是 §5.3 的 Boss 独有机制，走 startBossTransition。）
+let shakeT = 0;              // 当前抖动剩余时长（updateCamera 消费，update 递减）
+let shakeDur = HURT_SHAKE_TIME;   // 本次抖动的时长基准（k = shakeT/shakeDur 线性衰减）
+let shakeAmp = HURT_SHAKE_AMP;    // 本次抖动的幅度（米）
 let hurtFlashOpacity = 0; // 红闪当前不透明度（脉冲 + 低血底值，update 里衰减）
 
 function updateHealthUI() {
@@ -3928,8 +4571,19 @@ function updateDamageFlash(dt) {
   damageFlashEl.classList.toggle('hidden', hurtFlashOpacity <= 0.001);
 }
 
-function startCameraShake() {
-  shakeT = HURT_SHAKE_TIME;
+/**
+ * 通用震屏触发器（M5a §11 震屏解耦：原 startCameraShake 无参硬编码受击值）。
+ * @param {number} intensity 抖动幅度（米）
+ * @param {number} duration 衰减时长（秒）
+ * 叠加规则：更强震动（或当前无震动）时接管幅度/时长基准；弱震动不覆盖进行中的
+ * 强震动；shakeT 取 max——强震进行中来的弱震既不改基准也不缩短剩余时间。
+ */
+function triggerShake(intensity, duration) {
+  if (intensity >= shakeAmp || shakeT <= 0) {
+    shakeAmp = intensity;
+    shakeDur = duration;
+  }
+  shakeT = Math.max(shakeT, duration);
 }
 
 /** 当前关配置行（§4）。currentLevelId 越界回退 L1 行（防御；L1 倍率全 1.0 无行为差异）。 */
@@ -3949,7 +4603,7 @@ function damagePlayer(amount) {
   updateHealthUI();
   flashDamage();
   playHurtSound();
-  startCameraShake();
+  triggerShake(HURT_SHAKE_AMP, HURT_SHAKE_TIME);
   if (state.playerHealth <= 0) {
     endGame('death');
   }
@@ -4009,6 +4663,8 @@ function startGame(levelId) {
   sprayIndex = 0;
   // 受击反馈复位：否则重开局会带着上一局的抖动/红闪残渣
   shakeT = 0;
+  shakeDur = HURT_SHAKE_TIME;
+  shakeAmp = HURT_SHAKE_AMP;
   hurtFlashOpacity = 0;
   if (damageFlashEl) {
     damageFlashEl.style.opacity = 0;
@@ -4036,6 +4692,8 @@ function startGame(levelId) {
 
   // Clear old monsters and spawn new ones
   monsters.forEach(m => { scene.remove(m); });
+  // 生成预警光柱与怪物同级的清理（上一局残留的光柱会挂在原地到超时）
+  clearTelegraphs();
   // 清掉上一局残留的魔法弹（否则重开局瞬间会被飞了一半的弹打中）
   monsterProjectiles.forEach(p => disposeProjectile(p));
   monsterProjectiles.length = 0;
@@ -4048,8 +4706,10 @@ function startGame(levelId) {
   bulletTrails.length = 0;
   // 场地按关卡布局重建（§5.2 布局即数据；先重建再刷怪）
   applyLayout(lv.layout);
-  // 关卡组成刷怪：§4 spawns × §5.1 关卡倍率 × §2 全局血池校准 k（仅 L1-L6 吃 k，Boss 关 M5a 另算）
+  // 关卡组成刷怪：§4 spawns × §5.1 关卡倍率 × §2 全局血池校准 k（仅 L1-L6 吃 k）
   spawnMonsters(lv.spawns, { hp: lv.hpMul * HP_CALIB_MUL, spd: lv.spdMul });
+  // Boss 关（L7）：Boss 不入 spawns，由 boss 字段单独生成（不吃 k，§2 适用范围条款）
+  spawnBoss(lv);
 
   // Update UI
   updateUI();
@@ -4243,6 +4903,8 @@ function abandonLevel() {
   cancelReload();
   // 清场回到菜单观感（与 startGame 同级的清理，但不进入对局）
   monsters.forEach(m => scene.remove(m));
+  bossMonster = null;         // Boss 引用随清场作废（HUD 血条由 updateUI 判空隐藏）
+  clearTelegraphs();
   monsterProjectiles.forEach(p => disposeProjectile(p));
   monsterProjectiles.length = 0;
   bulletTrails.forEach(t => {
@@ -4306,6 +4968,7 @@ function update(dt) {
     updateParticles(cappedDT);
     updateBulletTrails(cappedDT);
     updateMonsterProjectiles(cappedDT);
+    updateTelegraphs(cappedDT);   // M5a：Boss 入场/召唤蟹落位的预警光柱
     // 受击反馈衰减：抖动时长递减（updateCamera 消费），红闪向低血底值回落
     if (shakeT > 0) shakeT = Math.max(0, shakeT - cappedDT);
     updateDamageFlash(cappedDT);
@@ -4608,6 +5271,7 @@ window.__SNAPSHOT__ = () => ({
   isGrounded,
   status: state.status,
   currentAmmo: state.currentAmmo,
+  playerHealth: state.playerHealth,   // M5a：Boss 转场回血探针断言用
   // M0 标定用统计（口径与结算屏 endGame 一致）
   accuracy: state.shotsFired > 0 ? state.shotsHit / state.shotsFired : 0,   // 命中率 = 命中 / 开枪
   headshotRate: state.shotsHit > 0 ? state.headshots / state.shotsHit : 0,  // 爆头率 = 爆头命中 / 总命中
@@ -4648,6 +5312,30 @@ window.__SNAPSHOT__.weapons = function () {
   return { current: currentWeaponId, owned: ownedWeapons(), ammo: { ...state.weaponAmmo } };
 };
 window.__SNAPSHOT__.switchWeapon = switchWeapon;
+// ---- M5a Boss 探针接口：状态快照 / 定量扣血 / 玩家血量直写（验证转场回血 30）----
+// 仅挂调试面（正常游玩不可达）。bossDamage 走真实 damageMonster——转场无敌期扣不动血，
+// 探针须等待无敌结束再扣（这正是 §5.3 转场机制的行为验收）。
+window.__SNAPSHOT__.boss = function () {
+  const b = bossMonster;
+  if (!b || b.userData.dying || !monsters.includes(b)) return null;
+  const ud = b.userData;
+  return {
+    hp: ud.health,
+    maxHealth: ud.maxHealth,
+    phase: ud.phase,
+    state: ud.bossState,
+    invuln: !!ud.invulnerable,
+    adds: monsters.filter(m => m.userData.type === 'crab' && !m.userData.dying).length,
+  };
+};
+window.__SNAPSHOT__.bossDamage = function (n) {
+  return bossMonster ? damageMonster(bossMonster, false, n) : false;
+};
+window.__SNAPSHOT__.setPlayerHealth = function (n) {
+  state.playerHealth = Math.max(0, Math.min(PLAYER_MAX_HEALTH, n));
+  updateHealthUI();
+  return state.playerHealth;
+};
 // 调试专用击杀钩子：§8.1「探针脚本逐关自动验收」需要探针能主动打完一局；
 // 只挂在本调试面下（正常游玩不可达）。逐轮头击直至清场（红 225HP 需 4 轮）。
 window.__SNAPSHOT__.cheatKillAll = function () {

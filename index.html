@@ -37,6 +37,17 @@
         </div>
         </div>
 
+      <!-- Boss 血条（M5a §9）：主宰名牌 + 血条 + 70%/40% 阶段刻度线（与 boss.phases 同源）；
+           仅 L7 且 Boss 在场时由 updateUI 显示，转场期整条闪烁 -->
+      <div id="boss-bar" class="hidden">
+        <span id="boss-name">主 宰</span>
+        <div id="boss-health-track">
+          <div id="boss-health-fill"></div>
+          <div class="boss-tick" style="left: 70%;"></div>
+          <div class="boss-tick" style="left: 40%;"></div>
+        </div>
+      </div>
+
       <!-- Crosshair -->
       <div id="crosshair">
         <div class="crosshair-line top"></div>
