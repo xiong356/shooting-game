@@ -5291,6 +5291,10 @@ window.__SNAPSHOT__ = () => ({
     z: m.position.z,
     alert: !!m.userData.alert,
     avoidSide: m.userData.avoidSide || 0,
+    // M5a：攻击状态机字段（红 windup/strike、蓝 casting/recoil、蟹 windup/lunge）
+    // ——探针按状态定时刻冻结截图用（前摇 0.35s 盲拍抓不到）
+    attackState: m.userData.attackState || null,
+    castState: m.userData.castState || null,
   })),
 });
 // 让探针直接调真实实现，而不是复制一份到测试脚本里（避免测试与实现漂移）

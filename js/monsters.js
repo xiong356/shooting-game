@@ -196,19 +196,30 @@ function buildBuffModel(palette, barColor, groupLabel, gemRadius = 0.25) {
   const shoulderL = new THREE.Mesh(shoulderGeo, palette.shoulder); shoulderL.position.set(-0.75, 1.65, 0); shoulderL.castShadow = true; group.add(shoulderL);
   const shoulderR = new THREE.Mesh(shoulderGeo, palette.shoulder); shoulderR.position.set( 0.75, 1.65, 0); shoulderR.castShadow = true; group.add(shoulderR);
 
-  // 手臂
+  // 手臂：肩部枢轴组（playtest 确认 Boss 枢轴修复后，红蓝/精英同款穿帮——统一回修）。
+  // 臂/腕环/拳同挂一个以肩为原点的 Group，状态机旋转 ud.armL/armR（即枢轴组）时
+  // 整臂绕肩摆动、拳随臂走；此前拳/腕环是 group 独立子节点、只有臂圆柱自转。
+  // 枢轴组顶替 'armL'/'armR' 命名（createMonster 按名抓引用，Group 与 Mesh 都有
+  // rotation，状态机零改动）；枢轴内 mesh 不命名，防 getObjectByName 撞名。
   const armGeo = new THREE.CylinderGeometry(0.25, 0.25, 1.2, 8);
-  const armL = new THREE.Mesh(armGeo, palette.limbs); armL.position.set(-0.85, 0.85, 0); armL.castShadow = true; armL.name = 'armL'; group.add(armL);
-  const armR = new THREE.Mesh(armGeo, palette.limbs); armR.position.set( 0.85, 0.85, 0); armR.castShadow = true; armR.name = 'armR'; group.add(armR);
-
-  // 拳头（亮色 + 臂部关节环）
   const fistGeo = new THREE.SphereGeometry(0.28, 8, 6);
-  const fistL = new THREE.Mesh(fistGeo, palette.shoulder); fistL.position.set(-0.85, 0.15, 0); group.add(fistL);
-  const fistR = new THREE.Mesh(fistGeo, palette.shoulder); fistR.position.set( 0.85, 0.15, 0); group.add(fistR);
-  // 腕部护甲环
   const bracerGeo = new THREE.TorusGeometry(0.28, 0.05, 8, 8);
-  const bracerL = new THREE.Mesh(bracerGeo, palette.gem); bracerL.position.set(-0.85, 0.35, 0); group.add(bracerL);
-  const bracerR = new THREE.Mesh(bracerGeo, palette.gem); bracerR.position.set( 0.85, 0.35, 0); group.add(bracerR);
+  for (const side of [-1, 1]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(0.85 * side, 1.45, 0);   // 肩点 = 臂顶（臂长 1.2 → 垂下时同旧布局）
+    pivot.name = side < 0 ? 'armL' : 'armR';
+    const arm = new THREE.Mesh(armGeo, palette.limbs);
+    arm.position.y = -0.6;                      // 世界 y 0.85，同旧
+    arm.castShadow = true;
+    pivot.add(arm);
+    const bracer = new THREE.Mesh(bracerGeo, palette.gem);
+    bracer.position.y = -1.1;                   // 世界 y 0.35，同旧
+    pivot.add(bracer);
+    const fist = new THREE.Mesh(fistGeo, palette.shoulder);
+    fist.position.y = -1.3;                     // 世界 y 0.15，同旧
+    pivot.add(fist);
+    group.add(pivot);
+  }
 
   // 双腿
   const legGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.8, 8);
