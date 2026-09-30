@@ -58,18 +58,31 @@ export const LEVELS = [
     layout: 'variantB',
     parTime: 114, parTimeMul: 1.5, maxAlive: 8, reward: { unlock: 7 } },
   // L7：Boss「主宰」三阶段（§5.3）。spawns 留空——Boss 不入 spawns（怪种 schema 注释），
-  // startGame 消费 boss 字段单独生成；P3 召唤蟹等阶段 adds 由 Boss 状态机自管（§4.1），
+  // startGame 消费 boss 字段单独生成；召唤等阶段 adds 由 Boss 状态机自管（§4.1），
   // 补位队列不适用 Boss 关。行为参数全部 [PLACEHOLDER]+推导，⚗️ M6 playtest 收口。
   { id: 7, name: '主宰降临', hpMul: 1.0, dmgMul: 1.0, spdMul: 1.0,
     spawns: [], layout: 'default',
     parTime: 180, parTimeMul: 1.5, maxAlive: 8, reward: { unlock: 7 },
     boss: {
+      // 逐阶段追速（用户点单「每进下一阶段速度更快」，凶猛档）：P1 基线 3.2，
+      // P2 4.4 > 走路 4.2（追着走路玩家跑）、P3 5.6 接近红怪 5.0；疾跑 7.2 仍可脱战
+      chaseSpeeds: [3.2, 4.4, 5.6],
       // 近战拍击（§5.3 P1：红怪同款放大；伤害走 MONSTER_SPECS.boss.meleeDamage 35）
       melee: { range: 4.0, hitRange: 4.5, windup: 0.7, strike: 0.2, lungeSpeed: 4, cooldown: 1.6 },
       // 法球三连（§5.3 P2：蓝怪吟唱放大，0.8s 预警；伤害走 projDamage 15）
       orb: { chant: 0.8, count: 3, interval: 0.22, speed: 11, radius: 0.45, cooldown: 4.0, range: 20 },
-      // 召唤蟹×3（§5.3 P3：每 20s 一波；存活蟹 ≥6 跳过本波；落位 ≥15m + 1s 光柱预警）
-      summon: { count: 3, interval: 20, firstDelay: 2.5, maxAliveAdds: 6, telegraph: 1.0, minDist: 15 },
+      // 递进召唤（用户点单）：从 P1 开始每 15s 一波，内容随阶段递进；
+      // 'elite' 为轮换伪类型（game.js 落地为 eliteRed/eliteBlue 交替）；首波在阶段转换后 2.5s
+      summon: {
+        interval: 15, firstDelay: 2.5, telegraph: 1.0, minDist: 15,
+        waves: {
+          1: [{ type: 'crab', count: 3 }],
+          2: [{ type: 'crab', count: 2 }, { type: 'red', count: 1 }, { type: 'blue', count: 1 }],
+          3: [{ type: 'crab', count: 2 }, { type: 'red', count: 1 }, { type: 'blue', count: 1 }, { type: 'elite', count: 1 }],
+        },
+        // 同场按类别封顶（用户点单）：达上限的类别本波跳过、计时照常重置
+        caps: { crab: 6, humanoid: 4, elite: 2 },
+      },
       // 破阶段转场：2s 无敌 + 吼叫震屏 + 玩家回 30 HP（§5.3；heal 30 ⚗️ 满血进 P3 则降 20）
       transition: { invuln: 2, heal: 30, shakeAmp: 0.12, shakeTime: 0.7 },
       // 入场演出：光柱 1.5s @(6,-40)（避让 default 中央柱 (0,-35) 的视线遮挡）
@@ -133,17 +146,33 @@ export function bossPhaseFor(ratio, phases) {
   return 3;
 }
 
+// Boss 召唤波条目的合法类型（M5b+ 递进召唤）：'elite' 是轮换伪类型，
+// game.js 落地为 eliteRed/eliteBlue 交替；常规 spawns（SPAWN_TYPES）不含伪类型。
+const BOSS_ADD_TYPES = ['crab', 'red', 'blue', 'elite'];
+
 /**
- * P3 召唤节流（§5.3，M5a）：存活蟹达到同场上限即跳过本波。
- * 纯函数与 bossPhaseFor 同住配置层（boss-test 直接 import，game.js bossSummonWave 共用；
- * Mimosa 钩子拦截测试侧 new Function 抽取——纯函数进配置模块是本项目既定解法，见 gradeFor 先例）。
- * 边界口径：恰在上限（===）也跳过——严格小于才放行；清蟹速度决定波次密度。
- * @param {number} aliveAdds 场上存活蟹数
- * @param {number} maxAliveAdds 召唤蟹同场上限（L7 boss.summon.maxAliveAdds）
- * @returns {boolean} true = 放行本波召唤
+ * Boss 召唤类型 → 同场封顶类别（M5b+ 递进召唤）：蟹单列、红/蓝同属 humanoid、
+ * 'elite' 伪类型归 elite。纯函数与 bossPhaseFor 同住配置层（boss-test 门禁直接 import，
+ * game.js bossSummonWave 共用；Mimosa 钩子拦截测试侧 new Function——纯函数进配置层是既定解法）。
+ * @param {'crab'|'red'|'blue'|'elite'} type 召唤条目类型（或场上怪物 userData.type）
+ * @returns {'crab'|'humanoid'|'elite'}
  */
-export function bossShouldSummon(aliveAdds, maxAliveAdds) {
-  return aliveAdds < maxAliveAdds;
+export function bossSummonCategory(type) {
+  if (type === 'crab') return 'crab';
+  if (type === 'red' || type === 'blue') return 'humanoid';
+  return 'elite';
+}
+
+/**
+ * 类别封顶判定（M5b+）：同类存活数达上限即跳过该类本波生成。
+ * 口径与原 bossShouldSummon 一致：严格小于才放行（恰在上限 = 跳过）。
+ * @param {'crab'|'humanoid'|'elite'} category 封顶类别
+ * @param {{crab?:number, humanoid?:number, elite?:number}} alive 各类别场上存活数
+ * @param {{crab:number, humanoid:number, elite:number}} caps 类别上限（L7 boss.summon.caps）
+ * @returns {boolean} true = 放行
+ */
+export function bossCanSummon(category, alive, caps) {
+  return (alive[category] || 0) < (caps[category] || 0);
 }
 
 /**
@@ -378,6 +407,11 @@ export function validateLevels(levels) {
  */
 function validateBossConfig(b, bat, errors) {
   if (!b || typeof b !== 'object') { errors.push(bat + ' 必须是对象'); return; }
+  // 逐阶段追速（用户点单）：P1/P2/P3 三元数组，须递增
+  if (!Array.isArray(b.chaseSpeeds) || b.chaseSpeeds.length !== 3 ||
+      !b.chaseSpeeds.every(isPosNum) || b.chaseSpeeds[0] >= b.chaseSpeeds[1] || b.chaseSpeeds[1] >= b.chaseSpeeds[2]) {
+    errors.push(bat + '.chaseSpeeds 必须是三元严格递增正数数组（P1/P2/P3 逐阶段追速）');
+  }
   // 近战拍击（P1：红怪同款放大）
   if (!b.melee || typeof b.melee !== 'object') { errors.push(bat + '.melee 必须是对象'); }
   else {
@@ -392,11 +426,32 @@ function validateBossConfig(b, bat, errors) {
       if (!isPosNum(b.orb[k])) errors.push(bat + '.orb.' + k + ' 必须是 >0 的有限数');
     }
   }
-  // 召唤蟹（P3：每 20s 一波，光柱预警后才可行动）
+  // 递进召唤（P1 蟹 → P2 +红蓝 → P3 +精英轮换；按类别封顶）
   if (!b.summon || typeof b.summon !== 'object') { errors.push(bat + '.summon 必须是对象'); }
   else {
-    for (const k of ['count', 'interval', 'firstDelay', 'maxAliveAdds', 'telegraph', 'minDist']) {
+    for (const k of ['interval', 'firstDelay', 'telegraph', 'minDist']) {
       if (!isPosNum(b.summon[k])) errors.push(bat + '.summon.' + k + ' 必须是 >0 的有限数');
+    }
+    const waves = b.summon.waves;
+    if (!waves || typeof waves !== 'object') { errors.push(bat + '.summon.waves 必须是对象（键 = 阶段 1|2|3）'); }
+    else {
+      for (const ph of ['1', '2', '3']) {
+        const wat = bat + '.summon.waves[' + ph + ']';
+        if (!Array.isArray(waves[ph]) || waves[ph].length === 0) { errors.push(wat + ' 必须是非空数组'); continue; }
+        waves[ph].forEach(function (e, j) {
+          const eat = wat + '[' + j + ']';
+          if (!e || typeof e !== 'object') { errors.push(eat + ' 必须是对象'); return; }
+          if (!BOSS_ADD_TYPES.includes(e.type)) errors.push(eat + '.type 非法（取值：' + BOSS_ADD_TYPES.join('|') + '）');
+          if (!isPosInt(e.count)) errors.push(eat + '.count 必须是正整数');
+        });
+      }
+    }
+    const caps = b.summon.caps;
+    if (!caps || typeof caps !== 'object') { errors.push(bat + '.summon.caps 必须是对象'); }
+    else {
+      for (const k of ['crab', 'humanoid', 'elite']) {
+        if (!isPosInt(caps[k])) errors.push(bat + '.summon.caps.' + k + ' 必须是正整数');
+      }
     }
   }
   // 破阶段转场（2s 无敌 + 吼叫震屏 + 回血 30）

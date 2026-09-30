@@ -16,6 +16,7 @@ const ok = (cond, label, extra) => {
   if (cond) { pass++; console.log('  [OK] ' + label); }
   else { fail++; console.log('  [FAIL] ' + label + (extra !== undefined ? '  → ' + JSON.stringify(extra) : '')); }
 };
+const expandW = (groups) => groups.flatMap(g => Array(g.count).fill(g.type));
 
 (async function main() {
   fs.copyFileSync(path.join(ROOT, 'js/config/levels.js'), path.join(TMP, 'levels.mjs'));
@@ -66,13 +67,30 @@ const ok = (cond, label, extra) => {
     bad7[6].boss.entrance.duration = -1;
     ok(L.validateLevels(bad7).some(e => e.includes('.boss.entrance.duration')), 'entrance.duration < 0 被拦截');
 
-    // parTimeMul（§6）
+    // 逐阶段追速 / 递进召唤 schema（M5b+）
     const bad8 = JSON.parse(JSON.stringify(L.LEVELS));
-    bad8[6].parTimeMul = 0;
-    ok(L.validateLevels(bad8).some(e => e.includes('.parTimeMul')), 'parTimeMul = 0 被拦截');
+    bad8[6].boss.chaseSpeeds = [3.2, 4.4];   // 缺 P3
+    ok(L.validateLevels(bad8).some(e => e.includes('.boss.chaseSpeeds')), 'chaseSpeeds 非三元被拦截');
     const bad9 = JSON.parse(JSON.stringify(L.LEVELS));
-    bad9[6].parTimeMul = 'x';
-    ok(L.validateLevels(bad9).some(e => e.includes('.parTimeMul')), 'parTimeMul 非数被拦截');
+    bad9[6].boss.chaseSpeeds = [5.6, 4.4, 3.2];   // 递减
+    ok(L.validateLevels(bad9).some(e => e.includes('.boss.chaseSpeeds')), 'chaseSpeeds 递减被拦截');
+    const bad10 = JSON.parse(JSON.stringify(L.LEVELS));
+    bad10[6].boss.summon.waves['1'] = [];
+    ok(L.validateLevels(bad10).some(e => e.includes('.summon.waves[1]')), '空波次被拦截');
+    const bad11 = JSON.parse(JSON.stringify(L.LEVELS));
+    bad11[6].boss.summon.waves['2'][0].type = 'dragon';
+    ok(L.validateLevels(bad11).some(e => e.includes('.type 非法')), '召唤类型越枚举被拦截（crab|red|blue|elite）');
+    const bad12 = JSON.parse(JSON.stringify(L.LEVELS));
+    bad12[6].boss.summon.caps = { crab: 6 };
+    ok(L.validateLevels(bad12).some(e => e.includes('.summon.caps')), 'caps 缺类别被拦截');
+
+    // parTimeMul（§6）
+    const bad13 = JSON.parse(JSON.stringify(L.LEVELS));
+    bad13[6].parTimeMul = 0;
+    ok(L.validateLevels(bad13).some(e => e.includes('.parTimeMul')), 'parTimeMul = 0 被拦截');
+    const bad14 = JSON.parse(JSON.stringify(L.LEVELS));
+    bad14[6].parTimeMul = 'x';
+    ok(L.validateLevels(bad14).some(e => e.includes('.parTimeMul')), 'parTimeMul 非数被拦截');
   }
 
   console.log('=== 组 3：gradeFor parTimeMul（§6 步枪关卡时间门 ×1.5）===');
@@ -97,22 +115,38 @@ const ok = (cond, label, extra) => {
     ok(l6.hpMul === 1.2 && l6.dmgMul === 1.2 && l6.spdMul === 1.05, 'L6 倍率 ×1.2/×1.2/×1.05（§5.1 毕业考）', l6);
     ok(l6.parTime === 114, 'L6 parTime = 14.2×8 = 114（§6 公式）', l6.parTime);
     const total = l6.spawns.reduce((s, x) => s + x.count, 0);
-    ok(total === 11, 'L6 总数 11（补位队列 M5b 交付，先全量刷——L4 同款先例）', total);
+    ok(total === 11, 'L6 总数 11（同场上限 8 + 补位队列 3，M5b）', total);
     ok(l7.spawns.length === 0, 'L7 spawns 空（Boss 不入 spawns，§4.1）');
     ok(l7.layout === 'default', 'L7 场地 = default（§4 场地列）');
     ok(l7.hpMul === 1.0 && l7.dmgMul === 1.0, 'L7 倍率全 1.0（Boss 数值独立，不吃关倍率/k）', l7);
     ok(l7.reward.unlock === 7, 'L7 reward.unlock 自指（通关后全关可重玩，封顶由 save.js 把守）');
     ok(JSON.stringify(l7.boss.phases) === '[0.7,0.4]', 'boss.phases [0.7, 0.4]（HUD 刻度线同源 §9）');
     ok(l7.boss.transition.heal === 30 && l7.boss.transition.invuln === 2, '转场回血 30 / 无敌 2s（§5.3 ⚗️）');
+    // M5b+ 机制改版（用户点单）：逐阶段加速 + 递进召唤 + 类别封顶
+    ok(JSON.stringify(l7.boss.chaseSpeeds) === '[3.2,4.4,5.6]', '逐阶段追速 3.2/4.4/5.6（凶猛档，P2/P3 越过走路 4.2）', l7.boss.chaseSpeeds);
+    ok(l7.boss.summon.interval === 15 && l7.boss.summon.firstDelay === 2.5, '波间隔 15s / 首波延迟 2.5s（用户点单）');
+    ok(JSON.stringify(expandW(l7.boss.summon.waves['1'])) === '["crab","crab","crab"]', 'P1 波 = 蟹×3（从 P1 开始召唤）');
+    ok(JSON.stringify(expandW(l7.boss.summon.waves['2'])) === '["crab","crab","red","blue"]', 'P2 波 = 蟹×2+红×1+蓝×1', l7.boss.summon.waves['2']);
+    const w3 = l7.boss.summon.waves['3'];
+    ok(w3.some(e => e.type === 'elite') && w3.length === 4, 'P3 波 = 蟹×2+红×1+蓝×1+精英×1（轮换伪类型）', w3);
+    const caps = l7.boss.summon.caps;
+    ok(caps.crab === 6 && caps.humanoid === 4 && caps.elite === 2, '类别封顶 蟹6/红蓝4/精英2', caps);
   }
 
-  console.log('=== 组 5：P3 召唤节流（bossShouldSummon，配置层共用实现）===');
+  console.log('=== 组 5：召唤类别映射与封顶判定（bossSummonCategory / bossCanSummon，配置层共用实现）===');
   {
-    ok(typeof L.bossShouldSummon === 'function', 'levels.js 导出 bossShouldSummon（game.js bossSummonWave 共用）');
-    ok(L.bossShouldSummon(0, 6) === true, '0 存活 < 上限 6 → 放行召唤');
-    ok(L.bossShouldSummon(5, 6) === true, '5 存活 < 6 → 放行');
-    ok(L.bossShouldSummon(6, 6) === false, '恰好 6（= 上限）→ 跳过本波（严格小于口径）');
-    ok(L.bossShouldSummon(9, 6) === false, '9 存活 > 6 → 跳过');
+    ok(typeof L.bossSummonCategory === 'function' && typeof L.bossCanSummon === 'function',
+      'levels.js 导出 bossSummonCategory / bossCanSummon（game.js bossSummonWave 共用）');
+    ok(L.bossSummonCategory('crab') === 'crab', '蟹 → crab（单列封顶）');
+    ok(L.bossSummonCategory('red') === 'humanoid' && L.bossSummonCategory('blue') === 'humanoid', '红/蓝 → humanoid（合并封顶）');
+    ok(L.bossSummonCategory('eliteRed') === 'elite' && L.bossSummonCategory('eliteBlue') === 'elite' && L.bossSummonCategory('elite') === 'elite',
+      '精英红/蓝/轮换伪类型 → elite');
+    const caps = { crab: 6, humanoid: 4, elite: 2 };
+    ok(L.bossCanSummon('crab', { crab: 5 }, caps) === true, '蟹 5 < 6 → 放行');
+    ok(L.bossCanSummon('crab', { crab: 6 }, caps) === false, '蟹恰 6 → 跳过（严格小于口径）');
+    ok(L.bossCanSummon('humanoid', { humanoid: 4 }, caps) === false, '红蓝 4 → 封顶');
+    ok(L.bossCanSummon('elite', { elite: 1 }, caps) === true, '精英 1 < 2 → 放行');
+    ok(L.bossCanSummon('crab', {}, caps) === true, '空存活表 → 放行（0 值缺省防御）');
   }
 
   console.log('');

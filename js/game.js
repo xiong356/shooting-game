@@ -17,7 +17,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS, falloffMultiplier } from './config/weapons.js';
-import { LEVELS, HP_CALIB_MUL, LAYOUTS, CRAB_CONFIG, gradeFor, bossPhaseFor, bossShouldSummon, splitSpawns } from './config/levels.js';
+import { LEVELS, HP_CALIB_MUL, LAYOUTS, CRAB_CONFIG, gradeFor, bossPhaseFor, bossSummonCategory, bossCanSummon, splitSpawns } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
 import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged, unlockAll } from './save.js';
 
@@ -4276,8 +4276,9 @@ function updateCrab(monster, ud, dist, dt) {
 // bossPhaseFor（boss-test 门禁共用）。
 // 状态机：entrance（光柱入场，不可行动不可受击）→ chase（追击 + 技能发起）
 //   → slamWindup/slamStrike（近战拍击，红怪同款放大）/ chant→volley（法球三连，P2 起）
-//   → transition（破阶段：无敌+吼叫+震屏+玩家回血）；召唤蟹（P3 起）在 chase 计时发起。
-// P1 只教近战、P2 加法球、P3 加召唤——每阶段引入一个已教机制的放大版，不教新东西（P1）。
+//   → transition（破阶段：无敌+吼叫+震屏+玩家回血）。
+// 递进召唤（M5b+ 用户点单）：全阶段每 15s 一波，P1 蟹×3 → P2 +红蓝 → P3 +精英轮换，
+// 同场按类别封顶（蟹6/红蓝4/精英2）；Boss 关 adds 不走补位队列（§4.1）。
 
 let bossMonster = null;   // 当前对局 Boss 引用；非 Boss 关恒 null（HUD 血条/探针按此判空）
 
@@ -4331,6 +4332,7 @@ function spawnBoss(lv) {
     castQueue: 0,
     castTimer: 0,
     summonTimer: cfg.summon.firstDelay,
+    eliteFlip: false,     // P3 精英轮换游标（bossNextEliteType 翻转，首只精英红）
     // 死亡演出覆写（updateDeathAnimation 泛型消费）：更长更克制，不学小怪翻倍膨胀
     deathDuration: 1.8,
     deathScaleTo: 1.2,
@@ -4360,22 +4362,39 @@ function startBossTransition(ud, cfg, phase) {
   triggerShake(cfg.transition.shakeAmp, cfg.transition.shakeTime);
   state.playerHealth = Math.min(PLAYER_MAX_HEALTH, state.playerHealth + cfg.transition.heal);
   updateHealthUI();
-  if (phase >= 3) ud.summonTimer = cfg.summon.firstDelay;
+  ud.summonTimer = cfg.summon.firstDelay;   // 每次破阶段后 2.5s 出新配方波（转场是喘息窗口）
 }
 
 /**
- * P3 召唤波：蟹×3 落位于玩家 ≥15m 环形点位（§4.1 入场点规则的 Boss 版），
- * 每只 1s 光柱预警后才可行动（背后刷蟹不构成无前摇伤害，P2）。
- * 存活蟹 ≥ maxAliveAdds 时跳过本波（计时照常重置——清蟹速度决定波次密度）。
- * 落位与单只生成走 spawnReinforcementMonster/pickSpawnPointAway（与补位队列共用，M5b）。
+ * 递进召唤波（M5b+ 用户点单）：从 P1 开始每 15s 一波（转场后 2.5s 首波），内容随阶段递进
+ * ——P1 蟹×3 → P2 +红蓝 → P3 +精英（'elite' 伪类型落地为 eliteRed/eliteBlue 交替）。
+ * 同场按类别封顶（蟹6/红蓝4/精英2，bossCanSummon 严格小于口径）：达上限的类别本波跳过，
+ * 波次计时照常重置。落位/光柱走 spawnReinforcementMonster（与补位队列共用）。
  */
 function bossSummonWave(ud, cfg) {
-  const aliveAdds = monsters.filter(m => m.userData.type === 'crab' && !m.userData.dying).length;
-  if (!bossShouldSummon(aliveAdds, cfg.summon.maxAliveAdds)) return;
-  for (let n = 0; n < cfg.summon.count; n++) {
-    spawnReinforcementMonster('crab', { hp: HP_CALIB_MUL, spd: 1 }, cfg.summon.telegraph, cfg.summon.minDist);
+  const wave = cfg.summon.waves[ud.phase] || [];
+  // 类别存活统计（含 spawnHold 期——已落位即占封顶名额）
+  const alive = { crab: 0, humanoid: 0, elite: 0 };
+  for (const m of monsters) {
+    if (m.userData.dying || m.userData.type === 'boss') continue;
+    alive[bossSummonCategory(m.userData.type)]++;
+  }
+  for (const entry of wave) {
+    const cat = bossSummonCategory(entry.type);
+    for (let n = 0; n < entry.count; n++) {
+      if (!bossCanSummon(cat, alive, cfg.summon.caps)) break;   // 封顶：该类剩余名额跳过
+      const type = entry.type === 'elite' ? bossNextEliteType(ud) : entry.type;
+      spawnReinforcementMonster(type, { hp: HP_CALIB_MUL, spd: 1 }, cfg.summon.telegraph, cfg.summon.minDist);
+      alive[cat]++;
+    }
   }
   playSummonWarnSound();
+}
+
+/** P3 精英轮换：交替给精英红 / 精英蓝（ud.eliteFlip 翻转，首只精英红）。 */
+function bossNextEliteType(ud) {
+  ud.eliteFlip = !ud.eliteFlip;
+  return ud.eliteFlip ? 'eliteRed' : 'eliteBlue';
 }
 
 /**
@@ -4386,6 +4405,9 @@ function updateBoss(monster, ud, dist, dt) {
   const cfg = currentLevel().boss;
   if (!cfg) return;
   ud.bossT += dt;
+  // 逐阶段追速（M5b+ 用户点单凶猛档）：P1 3.2 → P2 4.4 → P3 5.6，配置驱动；
+  // 疾跑 7.2 仍可脱战（§5.1「疾跑必能脱战」承诺不破）
+  ud.chaseSpeed = cfg.chaseSpeeds[ud.phase - 1] ?? ud.chaseSpeed;
 
   // ---- 入场演出：光柱期不可行动不可受击，结束帧吼叫激活（§5.3）----
   if (ud.bossState === 'entrance') {
@@ -4505,7 +4527,7 @@ function updateBoss(monster, ud, dist, dt) {
   // ---- chase：追击 + 技能发起 ----
   ud.meleeCooldown -= dt;
   ud.castCooldown -= dt;
-  if (ud.phase >= 3) ud.summonTimer -= dt;
+  ud.summonTimer -= dt;   // M5b+：全阶段召唤（P1 蟹 → P2 +红蓝 → P3 +精英），转场期不倒计时
 
   if (shouldChase(dist, ud.stopDist, monster.position, playerPosition.x, playerPosition.z)) {
     stepMonsterChase(monster.position, ud, playerPosition.x, playerPosition.z, ud.chaseSpeed, dt);
@@ -4523,9 +4545,9 @@ function updateBoss(monster, ud, dist, dt) {
     ud.bossT = 0;
     return;
   }
-  if (ud.phase >= 3 && ud.summonTimer <= 0) {
+  if (ud.summonTimer <= 0) {
     bossSummonWave(ud, cfg);
-    ud.summonTimer = cfg.summon.interval;   // 跳波（达上限）也重置——节奏稳定可预期
+    ud.summonTimer = cfg.summon.interval;   // 跳波（类别封顶）也重置——节奏稳定可预期
   }
 }
 
@@ -5391,13 +5413,20 @@ window.__SNAPSHOT__.boss = function () {
   const b = bossMonster;
   if (!b || b.userData.dying || !monsters.includes(b)) return null;
   const ud = b.userData;
+  // 召唤物按封顶类别拆分（M5b+ 递进召唤；spawnHold 期计入——已落位即占名额）
+  const adds = { crab: 0, humanoid: 0, elite: 0 };
+  for (const m of monsters) {
+    if (m.userData.dying || m.userData.type === 'boss') continue;
+    adds[bossSummonCategory(m.userData.type)]++;
+  }
   return {
     hp: ud.health,
     maxHealth: ud.maxHealth,
     phase: ud.phase,
     state: ud.bossState,
     invuln: !!ud.invulnerable,
-    adds: monsters.filter(m => m.userData.type === 'crab' && !m.userData.dying).length,
+    chaseSpeed: ud.chaseSpeed,
+    adds: { ...adds, total: adds.crab + adds.humanoid + adds.elite },
   };
 };
 window.__SNAPSHOT__.bossDamage = function (n) {
@@ -5418,6 +5447,12 @@ window.__SNAPSHOT__.teleportBoss = function (x, z) {
 window.__SNAPSHOT__.hurtMonster = function (idx, n) {
   const alive = monsters.filter(m => !m.userData.dying);
   return (idx >= 0 && idx < alive.length) ? damageMonster(alive[idx], false, n) : false;
+};
+// 清掉 Boss 全部召唤物、保留本体（M5b+ 探针长窗口保命用；正常游玩不可达）
+window.__SNAPSHOT__.clearAdds = function () {
+  const adds = monsters.filter(m => m.userData.type !== 'boss' && !m.userData.dying);
+  adds.forEach(m => damageMonster(m, false, 99999));
+  return adds.length;
 };
 // 调试专用击杀钩子：§8.1「探针脚本逐关自动验收」需要探针能主动打完一局；
 // 只挂在本调试面下（正常游玩不可达）。逐轮头击直至清场（红 225HP 需 4 轮）。

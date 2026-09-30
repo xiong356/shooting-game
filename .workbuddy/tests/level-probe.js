@@ -155,9 +155,10 @@ const ok = (cond, label, extra) => {
   const backAk = await evalJS('JSON.stringify({ current: window.__SNAPSHOT__.weapons().current, ammo: window.__SNAPSHOT__().currentAmmo })').then(s => JSON.parse(s));
   ok(backAk.current === 'ak47' && backAk.ammo === 30, '切回 AK → 30 发（弹药分存记忆）', backAk);
 
-  // ---- 3e. M5a Boss 三阶段：L7 入场/转场回血/召唤/胜利链路（§5.3）----
-  // 节奏设计：Boss 出生点距玩家 42m，chaseSpeed 3.2 → 探针窗口内Boss够不到玩家；
-  // 召唤蟹 8m/s 会在 ~2s 后咬人，故 P3 断言后立即击杀 Boss 并清场（setPlayerHealth(100) 兜底）。
+  // ---- 3e. M5a/M5b+ Boss 三阶段：入场/递进召唤/类别封顶/转场回血/胜利链路（§5.3）----
+  // 节奏：入场 1.5s → P1 首波（+2.5s）蟹×3；每破阶段回 2.5s 后出新配方波，间隔 15s。
+  // 探针保命三件套（凶猛档 P3 追速 5.6 + 全阶段召唤）：转场后把 Boss 传回远端、
+  // 波次断言完立即 clearAdds 防围殴、setPlayerHealth 回满。
   await evalJS('window.__SNAPSHOT__.loadLevel(7)');
   await sleep(800);
   const l7mon = await evalJS('JSON.stringify(window.__SNAPSHOT__().monsters.map(m => m.type))').then(s => JSON.parse(s));
@@ -170,7 +171,15 @@ const ok = (cond, label, extra) => {
   const bossIn = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
   ok(bossIn.state === 'chase' && bossIn.invuln === false, '入场结束 → chase 态 + 可受击', bossIn);
 
-  // P1 → P2 转场：扣到 69%（4140/6000），玩家 20 血 + 转场回血 30 → 50
+  // P1 首波：chase 后 2.5s → 蟹×3（从 P1 开始召唤）。断言后清场——转场回血断言需要
+  // 精确血量（场上无怪干扰），类别封顶跳过逻辑由 boss-test 组5（bossCanSummon 边界）把守
+  await sleep(3200);
+  const p1wave = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  ok(p1wave.adds.crab === 3 && p1wave.adds.humanoid === 0 && p1wave.adds.elite === 0, 'P1 波 = 蟹×3（递进召唤起点）', p1wave.adds);
+  await evalJS('window.__SNAPSHOT__.clearAdds()');
+  await sleep(1100);   // 召唤物死亡动画播完，场上归净
+
+  // P1 → P2 转场：扣到 69%（4140/6000），玩家 20 血 + 转场回血 30 → 50（净场精确断言）
   await evalJS('window.__SNAPSHOT__.setPlayerHealth(20)');
   await evalJS('window.__SNAPSHOT__.bossDamage(6000 - 4140)');
   await sleep(300);
@@ -178,26 +187,43 @@ const ok = (cond, label, extra) => {
   const hpT2 = await evalJS('window.__SNAPSHOT__().playerHealth');
   ok(bossT2.phase === 2 && bossT2.invuln === true, '69% → P2 转场 + 2s 无敌', bossT2);
   ok(hpT2 === 50, '转场回血 +30（20 → 50，§5.3 ⚗️ heal 30）', hpT2);
-
+  await evalJS('window.__SNAPSHOT__.teleportBoss(6, -40)');   // 凶猛档 P2 追速 4.4，拉回远端防贴脸
   await sleep(2200);   // 转场 2s 播完
   const bossC2 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
   ok(bossC2.state === 'chase' && bossC2.invuln === false, '转场结束 → chase + 可受击', bossC2);
 
-  // P2 → P3 转场 + 召唤：扣到恰好 40% → phase 3；转场 2s + firstDelay 2.5s 后 3 蟹落位
-  await evalJS('window.__SNAPSHOT__.setPlayerHealth(100)');   // 蟹很快贴脸，回满防探针中途团灭
+  // P2 波（转场后 2.5s）：蟹×2 + 红×1 + 蓝×1
+  await evalJS('window.__SNAPSHOT__.setPlayerHealth(100)');
+  await sleep(3000);
+  const p2wave = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  ok(p2wave.adds.crab === 2 && p2wave.adds.humanoid === 2 && p2wave.adds.elite === 0, 'P2 波 = 蟹×2+红×1+蓝×1', p2wave.adds);
+  await evalJS('window.__SNAPSHOT__.clearAdds()');
+  await sleep(1100);
+
+  // P2 → P3 转场：扣到恰好 40% → phase 3
+  await evalJS('window.__SNAPSHOT__.setPlayerHealth(100)');
   await evalJS('window.__SNAPSHOT__.bossDamage(4140 - 2400)');
   await sleep(300);
   const bossT3 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
   ok(bossT3.phase === 3 && bossT3.invuln === true, '40% → P3 转场', bossT3);
-  await sleep(5300);   // 转场 2s + firstDelay 2.5s + 落位余量
-  const bossS3 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
-  ok(bossS3 && bossS3.adds === 3, 'P3 召唤 3 只迅捷蟹（firstDelay 后首波，§5.3）', bossS3);
+  await evalJS('window.__SNAPSHOT__.teleportBoss(6, -40)');
+  await sleep(2200);
+  const bossC3 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  ok(bossC3.state === 'chase' && bossC3.chaseSpeed === 5.6, 'P3 追速升到 5.6（逐阶段加速凶猛档）', bossC3);
 
-  // 击杀 Boss → 蟹残留不结算（清 adds 是设计的一部分）；清场 → victory + unlocked 7
+  // P3 波：蟹×2 + 红×1 + 蓝×1 + 精英×1（轮换伪类型 → 精英红）
+  await evalJS('window.__SNAPSHOT__.setPlayerHealth(100)');
+  await sleep(3000);
+  const p3wave = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
+  ok(p3wave.adds.crab === 2 && p3wave.adds.humanoid === 2 && p3wave.adds.elite === 1 && p3wave.adds.total === 5,
+    'P3 波 = 蟹×2+红×1+蓝×1+精英×1（净场配额内全量生成）', p3wave.adds);
+
+  // 击杀 Boss → 召唤群在场不结算（清 adds 是设计的一部分）；清场 → victory + unlocked 7
+  await evalJS('window.__SNAPSHOT__.setPlayerHealth(100)');
   await evalJS('window.__SNAPSHOT__.bossDamage(6000)');
-  await sleep(2500);   // Boss 死亡动画 1.8s 播完移除
+  await sleep(600);   // Boss 进入死亡（召唤群在场）
   const afterBossDeath = await evalJS('JSON.stringify({ s: window.__SNAPSHOT__().status, b: window.__SNAPSHOT__.boss() })').then(s => JSON.parse(s));
-  ok(afterBossDeath.s === 'playing' && afterBossDeath.b === null, 'Boss 死 + 蟹在场 → 不结算，boss() 为 null', afterBossDeath);
+  ok(afterBossDeath.s === 'playing' && afterBossDeath.b === null, 'Boss 死 + 召唤群在场 → 不结算，boss() 为 null', afterBossDeath);
   await evalJS('window.__SNAPSHOT__.cheatKillAll()');
   await sleep(3000);
   const l7victory = await evalJS(`JSON.stringify((() => {
