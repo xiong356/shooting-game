@@ -59,15 +59,24 @@ export function clearCalibSamples() {
   removeKey(CALIB_KEY);
 }
 
-/** 池化统计：所有样本原始计数相加后再求比率（对各局比率取平均会因样本量不同失真）。 */
+/** 池化统计：所有样本原始计数相加后再求比率（对各局比率取平均会因样本量不同失真）。
+ *  M5b：补胜利局用时统计（elapsedSec 埋点）——§6 S 档 parTime P75 收紧的数据入口，
+ *  只做只读汇总，不参与评级。 */
 export function calibSummary() {
   let f = 0, h = 0, hs = 0;
   for (const s of calibSamples) { f += s.shotsFired; h += s.shotsHit; hs += s.headshots; }
+  const victoryElapsed = calibSamples
+    .filter(s => s.result === 'victory' && Number.isFinite(s.elapsedSec))
+    .map(s => s.elapsedSec)
+    .sort((a, b) => a - b);
   return {
     n: calibSamples.length,                 // 样本局数；§10 要求 ≥10
     pooledAccuracy: f > 0 ? h / f : 0,       // Σ命中 / Σ开枪
     pooledHeadshotRate: h > 0 ? hs / h : 0,  // Σ爆头 / Σ命中
     totalShotsFired: f, totalShotsHit: h, totalHeadshots: hs,
+    victoryRuns: victoryElapsed.length,      // 有用时数据的胜利局数
+    // 胜利局用时中位数（偶数取中位右值，粗粒度够 P75 档位参考）
+    medianVictorySec: victoryElapsed.length ? victoryElapsed[victoryElapsed.length >> 1] : null,
   };
 }
 

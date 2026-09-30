@@ -46,6 +46,7 @@ export const LEVELS = [
     spawns: [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }], layout: 'variantA',
     parTime: 63, maxAlive: 8, reward: { unlock: 4, weapon: 'shotgun' } },
   { id: 4, name: '蟹群来袭', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
+    // M5b：总数 9 > maxAlive 8 → 最后 1 只蓝怪开局进 FIFO 队列，首只怪死亡动画播完补位（§4.1）
     spawns: [{ type: 'crab', count: 4 }, { type: 'red', count: 3 }, { type: 'blue', count: 2 }], layout: 'variantA',
     parTime: 65, maxAlive: 8, reward: { unlock: 5 } },
   { id: 5, name: '暗影先锋', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
@@ -143,6 +144,28 @@ export function bossPhaseFor(ratio, phases) {
  */
 export function bossShouldSummon(aliveAdds, maxAliveAdds) {
   return aliveAdds < maxAliveAdds;
+}
+
+/**
+ * 补位队列切分（§4.1，M5b）：按组成表顺序把 spawns 切成「开局同场」与「FIFO 补位队列」
+ * 两段，单组可跨界拆分（L4 蓝×2 → 开局 1 + 队列 1）。纯函数与 validateLevels 同住配置层
+ * ——queue-test 门禁直接 import 本实现，game.js spawnMonsters 消费，避免测试与实现漂移。
+ * @param {Array} composition LEVELS 行 spawns（[{type, count}]）
+ * @param {number} maxAlive 同场上限（§4.1 [PLACEHOLDER] 8；Infinity = 不设限，菜单背景用）
+ * @returns {{initial: Array<{type:string,count:number}>, queue: Array<{type:string,count:number}>}}
+ *   initial = 开局同场（总数 ≤ maxAlive），queue = FIFO 补位（保组成表顺序）
+ */
+export function splitSpawns(composition, maxAlive) {
+  const initial = [];
+  const queue = [];
+  let budget = maxAlive;
+  for (const group of composition) {
+    const take = Math.min(group.count, Math.max(0, budget));
+    if (take > 0) initial.push({ type: group.type, count: take });
+    if (group.count - take > 0) queue.push({ type: group.type, count: group.count - take });
+    budget -= take;
+  }
+  return { initial, queue };
 }
 
 // ---- schema 取值域 ----

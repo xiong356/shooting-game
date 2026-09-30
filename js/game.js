@@ -17,7 +17,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { WEAPONS, falloffMultiplier } from './config/weapons.js';
-import { LEVELS, HP_CALIB_MUL, LAYOUTS, CRAB_CONFIG, gradeFor, bossPhaseFor, bossShouldSummon } from './config/levels.js';
+import { LEVELS, HP_CALIB_MUL, LAYOUTS, CRAB_CONFIG, gradeFor, bossPhaseFor, bossShouldSummon, splitSpawns } from './config/levels.js';
 import { createMonster, drawHealthBar, updateHealthBarAnimations, HEALTH_TRAIL_DELAY, BLUE_CAST_RANGE } from './monsters.js';
 import { pushCalibSample, getCalibSamples, clearCalibSamples, calibSummary, applyLevelResult, readSave, getSave, getSaveMeta, onSaveMerged, unlockAll } from './save.js';
 
@@ -668,8 +668,12 @@ const monsters = [];
 // 菜单背景刷怪（观感用，与关卡/评级无关）：沿用 M0 时代「6~8 只红蓝各半」的观感
 const MENU_COMPOSITION = [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }];
 
-// 怪物 id 序列（spawnMonsters 重置；Boss/召唤蟹共用，__SNAPSHOT__ monsters.id 消费）
+// 怪物 id 序列（spawnMonsters 重置；Boss/召唤蟹/队列补位共用，__SNAPSHOT__ monsters.id 消费）
 let monsterIdSeq = 0;
+
+// 补位队列（§4.1 M5b）：开局超编的怪在此排队，每有 1 只死亡动画播完（removeMonster，
+// 唯一移除点）出队 1 只补位。条目 {type, mul}；Boss 关 spawns 空 → 队列恒空（adds 自管）。
+const spawnQueue = [];
 
 /**
  * 野怪 userData 行为字段初始化契约（M5a 自 spawnMonsters 提取）。
@@ -715,35 +719,47 @@ function baseMonsterUserData(monster, id, x, z) {
  * 按组成表刷怪（避开玩家出生点）。composition 形如 [{type:'red',count:4}, …]；
  * mul 透传 createMonster（{hp,spd}；dmg 倍率在攻击结算侧 damagePlayer 消费，§5.1）。
  * 关卡倍率 × §2 全局血池校准 k（HP_CALIB_MUL）由 startGame 合成后传入。
+ * maxAlive（§4.1 M5b）：同场上限——超编部分按组成表顺序进 FIFO 补位队列（splitSpawns），
+ * 每有 1 只死亡动画播完出队补位；缺省 Infinity 不设限（菜单背景观感刷怪）。
+ * 队列在此重置：startGame / abandonLevel / 回菜单都经本函数清场，无额外挂点。
  */
-function spawnMonsters(composition, mul) {
+function spawnMonsters(composition, mul, maxAlive = Infinity) {
   monsters.length = 0;
+  spawnQueue.length = 0;
   monsterIdSeq = 0;
+  const split = splitSpawns(composition, maxAlive);
   const rng = (min, max) => Math.random() * (max - min) + min;
-  for (const group of composition) {
-    for (let n = 0; n < group.count; n++) {
-      let x, z;
-      do {
-        x = rng(-24, 24);
-        z = rng(-44, 10);
-      } while (Math.sqrt(x * x + (z - 2) * (z - 2)) < 10); // 避开玩家出生点 (0,0,2)
 
-      // M0.5③：模型/数值基座（maxHealth/chaseSpeed/stopDist）/俯仰支点由怪种工厂构建，
-      // 默认倍率 1.0；M1③ 起关卡行经 lv.spawns × lv 倍率传入。
-      const monster = createMonster(group.type, mul);
-      monster.position.set(x, 0, z);
+  const placeOne = (type) => {
+    let x, z;
+    do {
+      x = rng(-24, 24);
+      z = rng(-44, 10);
+    } while (Math.sqrt(x * x + (z - 2) * (z - 2)) < 10); // 避开玩家出生点 (0,0,2)
 
-      // 随机初始朝向
-      monster.rotation.y = Math.random() * Math.PI * 2;
+    // M0.5③：模型/数值基座（maxHealth/chaseSpeed/stopDist）/俯仰支点由怪种工厂构建，
+    // 默认倍率 1.0；M1③ 起关卡行经 lv.spawns × lv 倍率传入。
+    const monster = createMonster(type, mul);
+    monster.position.set(x, 0, z);
 
-      monster.userData = baseMonsterUserData(monster, monsterIdSeq++, x, z);
+    // 随机初始朝向
+    monster.rotation.y = Math.random() * Math.PI * 2;
 
-      // 血条画成满血
-      drawHealthBar(monster.userData.healthBar, 1);
+    monster.userData = baseMonsterUserData(monster, monsterIdSeq++, x, z);
 
-      scene.add(monster);
-      monsters.push(monster);
-    }
+    // 血条画成满血
+    drawHealthBar(monster.userData.healthBar, 1);
+
+    scene.add(monster);
+    monsters.push(monster);
+  };
+
+  for (const group of split.initial) {
+    for (let n = 0; n < group.count; n++) placeOne(group.type);
+  }
+  // 超编 → 逐只入 FIFO 队列（保组成表顺序；mul 随条目携带，补位时同倍率生成）
+  for (const group of split.queue) {
+    for (let n = 0; n < group.count; n++) spawnQueue.push({ type: group.type, mul });
   }
 }
 
@@ -893,6 +909,12 @@ function removeMonster(monster) {
   });
   const i = monsters.indexOf(monster);
   if (i >= 0) monsters.splice(i, 1);
+  // §4.1 补位（M5b）：死亡动画播完（本函数是怪物唯一移除点）才出队 1 只——
+  // 濒死怪（dying）在动画期间仍占 monsters 名额但不触发补位（§9 风险行）
+  if (spawnQueue.length > 0) {
+    const entry = spawnQueue.shift();
+    spawnReinforcementMonster(entry.type, entry.mul, 1.0, 15);
+  }
 }
 
 /** 击杀播报（#kill-feed 元素此前一直未被使用） */
@@ -1421,6 +1443,55 @@ function clearTelegraphs() {
     tg.mesh.material.dispose();
   }
   telegraphs.length = 0;
+}
+
+// ============================================
+// REINFORCEMENT（§4.1 补位落位，M5b；Boss 召唤共用）
+// ============================================
+
+/**
+ * 落位点选取（§4.1 退化梯子）：玩家 ≥minDist 的环形随机点 → 场内钳制（x∈[-24,24]
+ * z∈[-44,10]）；12 次取不足 minDist×0.8 → 降级 minDist×2/3 再试 6 次 → 仍无解返回
+ * 钳制后的最远候选。纯几何不查障碍——生成后由 resolveObstacleCollisions 兜底推出。
+ * Boss 召唤（bossSummonWave）与队列补位（removeMonster）共用。
+ */
+function pickSpawnPointAway(minDist) {
+  let best = null;
+  let bestD = -1;
+  const tryRing = (dist, attempts) => {
+    for (let a = 0; a < attempts; a++) {
+      const ang = Math.random() * Math.PI * 2;
+      const x = Math.max(-24, Math.min(24, playerPosition.x + Math.sin(ang) * dist));
+      const z = Math.max(-44, Math.min(10, playerPosition.z + Math.cos(ang) * dist));
+      const d = Math.hypot(x - playerPosition.x, z - playerPosition.z);
+      if (d > bestD) { bestD = d; best = { x, z }; }
+      if (d >= minDist * 0.8) return true;
+    }
+    return false;
+  };
+  if (tryRing(minDist, 12)) return best;
+  if (tryRing(minDist * 2 / 3, 6)) return best;   // 15m 无解 → 10m（§4.1 退化档）
+  return best;                                     // 仍无解 → 场内最远候选
+}
+
+/**
+ * 单只补位/召唤怪生成：落位 → 1s 光柱预警（spawnHold 期不可行动，§4.1 P2）→ 激活。
+ * 统一永远播光柱——比 §4.1 原文「仅玩家背后 90° 视锥内才预警」口径更严：
+ * 与 Boss 召唤蟹同款视觉语言、单一代码路径（偏差已记设计文档 §4.1 落地注记）。
+ */
+function spawnReinforcementMonster(type, mul, holdTime, minDist = 15) {
+  const p = pickSpawnPointAway(minDist);
+  const monster = createMonster(type, mul);
+  monster.position.set(p.x, 0, p.z);
+  monster.rotation.y = Math.random() * Math.PI * 2;
+  monster.userData = baseMonsterUserData(monster, monsterIdSeq++, p.x, p.z);
+  monster.userData.spawnHold = holdTime;
+  resolveObstacleCollisions(monster.position, monster.userData.radius ?? 0.65);
+  drawHealthBar(monster.userData.healthBar, 1);
+  scene.add(monster);
+  monsters.push(monster);
+  spawnTelegraph(p.x, p.z, { radius: 1, height: 3, color: '#ffb347', duration: holdTime });
+  return monster;
 }
 
 // ============================================
@@ -4296,30 +4367,13 @@ function startBossTransition(ud, cfg, phase) {
  * P3 召唤波：蟹×3 落位于玩家 ≥15m 环形点位（§4.1 入场点规则的 Boss 版），
  * 每只 1s 光柱预警后才可行动（背后刷蟹不构成无前摇伤害，P2）。
  * 存活蟹 ≥ maxAliveAdds 时跳过本波（计时照常重置——清蟹速度决定波次密度）。
+ * 落位与单只生成走 spawnReinforcementMonster/pickSpawnPointAway（与补位队列共用，M5b）。
  */
 function bossSummonWave(ud, cfg) {
   const aliveAdds = monsters.filter(m => m.userData.type === 'crab' && !m.userData.dying).length;
   if (!bossShouldSummon(aliveAdds, cfg.summon.maxAliveAdds)) return;
   for (let n = 0; n < cfg.summon.count; n++) {
-    // 环形随机点位：minDist 起步逐次外扩重试；被边界钳制后仍不足 minDist 的 80% 视为
-    // 退化（§4.1 退化策略），接受钳制点——Boss 关场地开阔，实际几乎不会触发
-    let px = playerPosition.x, pz = playerPosition.z;
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const ang = Math.random() * Math.PI * 2;
-      const d = cfg.summon.minDist + attempt * 1.5;
-      px = Math.max(-24, Math.min(24, playerPosition.x + Math.sin(ang) * d));
-      pz = Math.max(-44, Math.min(10, playerPosition.z + Math.cos(ang) * d));
-      if (Math.hypot(px - playerPosition.x, pz - playerPosition.z) >= cfg.summon.minDist * 0.8) break;
-    }
-    const crab = createMonster('crab', { hp: HP_CALIB_MUL, spd: 1 });
-    crab.position.set(px, 0, pz);
-    crab.rotation.y = Math.random() * Math.PI * 2;
-    crab.userData = baseMonsterUserData(crab, monsterIdSeq++, px, pz);
-    crab.userData.spawnHold = cfg.summon.telegraph;
-    drawHealthBar(crab.userData.healthBar, 1);
-    scene.add(crab);
-    monsters.push(crab);
-    spawnTelegraph(px, pz, { radius: 1, height: 3, color: '#ffb347', duration: cfg.summon.telegraph });
+    spawnReinforcementMonster('crab', { hp: HP_CALIB_MUL, spd: 1 }, cfg.summon.telegraph, cfg.summon.minDist);
   }
   playSummonWarnSound();
 }
@@ -4481,10 +4535,15 @@ function updateBoss(monster, ud, dist, dt) {
 function updateUI() {
   // Update monster count (separate elements)
   // 存活数：已判定死亡（正在播死亡动画）的野怪不再计入。
-  // 精英计入同族计数（猩红/蔚蓝），蟹单列（M3③）
-  state.redAlive = monsters.filter(m => (m.userData.type === 'red' || m.userData.type === 'eliteRed') && !m.userData.dying).length;
-  state.blueAlive = monsters.filter(m => (m.userData.type === 'blue' || m.userData.type === 'eliteBlue') && !m.userData.dying).length;
-  state.crabAlive = monsters.filter(m => m.userData.type === 'crab' && !m.userData.dying).length;
+  // 精英计入同族计数（猩红/蔚蓝），蟹单列（M3③）。
+  // 补位队列按类型计入（M5b §4.1「向玩家坦诚总账」——玩家看到的剩余 = 场上 + 队列）
+  const queued = (types) => spawnQueue.filter(q => types.includes(q.type)).length;
+  state.redAlive = monsters.filter(m => (m.userData.type === 'red' || m.userData.type === 'eliteRed') && !m.userData.dying).length
+    + queued(['red', 'eliteRed']);
+  state.blueAlive = monsters.filter(m => (m.userData.type === 'blue' || m.userData.type === 'eliteBlue') && !m.userData.dying).length
+    + queued(['blue', 'eliteBlue']);
+  state.crabAlive = monsters.filter(m => m.userData.type === 'crab' && !m.userData.dying).length
+    + queued(['crab']);
 
   const redEl = document.getElementById('monster-count-red');
   const blueEl = document.getElementById('monster-count-blue');
@@ -4710,8 +4769,9 @@ function startGame(levelId) {
   bulletTrails.length = 0;
   // 场地按关卡布局重建（§5.2 布局即数据；先重建再刷怪）
   applyLayout(lv.layout);
-  // 关卡组成刷怪：§4 spawns × §5.1 关卡倍率 × §2 全局血池校准 k（仅 L1-L6 吃 k）
-  spawnMonsters(lv.spawns, { hp: lv.hpMul * HP_CALIB_MUL, spd: lv.spdMul });
+  // 关卡组成刷怪：§4 spawns × §5.1 关卡倍率 × §2 全局血池校准 k（仅 L1-L6 吃 k）；
+  // maxAlive 消费 §4.1 同场上限——超编进 FIFO 补位队列（M5b）
+  spawnMonsters(lv.spawns, { hp: lv.hpMul * HP_CALIB_MUL, spd: lv.spdMul }, lv.maxAlive);
   // Boss 关（L7）：Boss 不入 spawns，由 boss 字段单独生成（不吃 k，§2 适用范围条款）
   spawnBoss(lv);
 
@@ -4965,8 +5025,9 @@ function update(dt) {
     updateInaccuracy(cappedDT);   // 依赖本帧 updateMovement 后的 locomotion.speed/isGrounded
     updateCrosshairSpread();
     updateMonsters(cappedDT);
-    // 胜利判定：死亡动画播完的野怪会从 monsters 移除，数组清空即全歼
-    if (monsters.length === 0) {
+    // 胜利判定：死亡动画播完的野怪会从 monsters 移除，数组清空即全歼；
+    // 补位队列（M5b §4.1）必须一并清空——否则场上瞬时清空会被误判通关
+    if (monsters.length === 0 && spawnQueue.length === 0) {
       endGame('victory');
     }
     updateParticles(cappedDT);
@@ -5237,7 +5298,8 @@ function init() {
 // 累积每局的原始计数（开枪/命中/爆头），供 §12「命中率/爆头率标定」跨局按原始计数
 // 池化求值。M0.5④：存储与池化统计已迁入 js/save.js（§7 实现载体），此处只做
 // 「从 state 取数 → 推给存储层」的胶水。
-/** 一局真实结束（victory/death）时记录一条样本；不可达的 'time' 分支不计。 */
+/** 一局真实结束（victory/death）时记录一条样本；不可达的 'time' 分支不计。
+ *  M5b：补 elapsedSec（§6 S 档时间标定埋点）——parTime P75 收紧待 M6 用此数据。 */
 function recordCalibSample(reason) {
   if (reason !== 'victory' && reason !== 'death') return;
   pushCalibSample({
@@ -5246,6 +5308,7 @@ function recordCalibSample(reason) {
     shotsFired: state.shotsFired,
     shotsHit: state.shotsHit,
     headshots: state.headshots,
+    elapsedSec: (performance.now() - state.levelStartTime) / 1000,
   });
 }
 
@@ -5283,6 +5346,7 @@ window.__SNAPSHOT__ = () => ({
   footstepCount,   // 单调递增，不受 FOOTSTEP_LOG_MAX 截断影响
   obstacleCount: solidObstacles.length,   // 已登记的实体障碍数（碰撞体与几何体同步）
   layout: currentLayoutName,              // 当前布局预设名（M2② probe 断言用）
+  spawnQueue: spawnQueue.map(q => q.type), // M5b：补位队列 FIFO（§4.1 探针断言用）
   // 野怪位置与绕行状态，供自动化验证「不穿墙 / 不卡死」
   monsters: monsters.filter(m => !m.userData.dying).map(m => ({
     id: m.userData.id,
@@ -5350,9 +5414,15 @@ window.__SNAPSHOT__.teleportBoss = function (x, z) {
   bossMonster.position.set(x, 0, z);
   return true;
 };
+// 定量打伤第 idx 只存活怪（M5b 补位节奏验证用；正常游玩不可达）
+window.__SNAPSHOT__.hurtMonster = function (idx, n) {
+  const alive = monsters.filter(m => !m.userData.dying);
+  return (idx >= 0 && idx < alive.length) ? damageMonster(alive[idx], false, n) : false;
+};
 // 调试专用击杀钩子：§8.1「探针脚本逐关自动验收」需要探针能主动打完一局；
 // 只挂在本调试面下（正常游玩不可达）。逐轮头击直至清场（红 225HP 需 4 轮）。
 window.__SNAPSHOT__.cheatKillAll = function () {
+  spawnQueue.length = 0;   // 调试面语义 = 清场：队列一并作废，否则补位会让探针胜利路径打不完
   let guard = 20;
   while (monsters.some(m => !m.userData.dying) && guard-- > 0) {
     for (const m of monsters.filter(x => !x.userData.dying)) damageMonster(m, true);

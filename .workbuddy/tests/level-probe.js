@@ -129,7 +129,7 @@ const ok = (cond, label, extra) => {
   await evalJS('window.__SNAPSHOT__.loadLevel(4)');
   await sleep(500);
   const l4 = await evalJS(`JSON.stringify(window.__SNAPSHOT__().monsters.map(m => m.type))`).then(s => JSON.parse(s));
-  ok(l4.length === 9, 'L4 刷怪总数 9（蟹4+红3+蓝2，maxAlive 执行留 M5b）', l4.length);
+  ok(l4.length === 8, 'L4 开局同场 8（9 只超编 → 同场上限，M5b §4.1）', l4.length);
   ok(l4.filter(t => t === 'crab').length === 4, 'L4 含 4 只迅捷蟹', l4);
   await evalJS('window.__SNAPSHOT__.loadLevel(5)');
   await sleep(500);
@@ -214,6 +214,43 @@ const ok = (cond, label, extra) => {
   ok(l7victory.nextVisible === false, 'L7 为最后一关：不显示下一关按钮', l7victory.nextVisible);
   ok(l7victory.bossBarHidden === true, '结算后 Boss 血条隐藏', l7victory.bossBarHidden);
   ok(l7victory.save.unlocked === 7, 'L7 通关 → unlocked 7（§7 封顶）', l7victory.save.unlocked);
+
+  // ---- 3f. M5b 补位队列：L6 同场上限 + FIFO 补位节奏（§4.1）----
+  // 节奏：死亡动画 0.9s 播完（removeMonster）才出队 → 补位怪携 1s spawnHold 入场。
+  await evalJS('window.__SNAPSHOT__.loadLevel(6)');
+  await sleep(800);
+  const l6q = await evalJS('JSON.stringify({ alive: window.__SNAPSHOT__().monsters.length, queue: window.__SNAPSHOT__().spawnQueue })').then(s => JSON.parse(s));
+  ok(l6q.alive === 8, 'L6 开局同场 8（11 只超编 → 同场上限，§4.1）', l6q.alive);
+  ok(JSON.stringify(l6q.queue) === '["crab","crab","crab"]', 'FIFO 队列 = 蟹×3（splitSpawns 切分）', l6q.queue);
+
+  // 杀 1 只（首只 = 精英红）：死亡动画期间 dying 占位不触发补位（§9 风险行）
+  await evalJS('window.__SNAPSHOT__.hurtMonster(0, 99999)');
+  await sleep(200);
+  const l6dying = await evalJS('JSON.stringify({ alive: window.__SNAPSHOT__().monsters.length, queue: window.__SNAPSHOT__().spawnQueue, red: document.getElementById("monster-count-red").textContent })').then(s => JSON.parse(s));
+  ok(l6dying.queue.length === 3, '死亡动画期间队列不减（removeMonster 才补位）', l6dying.queue);
+  ok(l6dying.alive === 7 && l6dying.red === '3', 'dying 不计入存活数，HUD = 场上 + 队列（坦诚总账）', l6dying);
+
+  await sleep(1200);   // 死亡动画 0.9s + 补位落位余量
+  const l6refill = await evalJS('JSON.stringify({ alive: window.__SNAPSHOT__().monsters.length, queue: window.__SNAPSHOT__().spawnQueue, crab: document.getElementById("monster-count-crab").textContent })').then(s => JSON.parse(s));
+  ok(l6refill.queue.length === 2, '动画播完 → 出队 1 只（队列 3 → 2）', l6refill.queue);
+  ok(l6refill.alive === 8, '同场回到 8（补位怪含 1s spawnHold 光柱期）', l6refill.alive);
+  ok(l6refill.crab === '3', '蟹计数 = 场上 1（补位蟹 hold 期）+ 队列 2（坦诚总账）', l6refill.crab);
+
+  // 清场：cheatKillAll 连队列一并作废（调试面语义）→ victory 且队列 0
+  await evalJS('window.__SNAPSHOT__.cheatKillAll()');
+  await sleep(3000);
+  const l6v = await evalJS(`JSON.stringify((() => {
+    const q = (id) => document.getElementById(id);
+    return {
+      status: window.__SNAPSHOT__().status,
+      title: q('end-title').textContent,
+      queue: window.__SNAPSHOT__().spawnQueue,
+      save: window.__SNAPSHOT__.saveRead().save,
+    };
+  })())`).then(s => JSON.parse(s));
+  ok(l6v.status === 'ended' && l6v.title === '通关 · 风暴前夕', 'L6 通关结算（队列不影响胜利判定）', l6v);
+  ok(l6v.queue.length === 0, '结算时队列已清空', l6v.queue);
+  ok(l6v.save.unlocked === 7, 'L6 通关 → 解锁 L7', l6v.save.unlocked);
 
   // ---- 4. 阵亡路径：L2 挂机等死 → F + 不写盘 ----
   let engaged = false;
