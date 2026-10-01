@@ -93,19 +93,23 @@ const expandW = (groups) => groups.flatMap(g => Array(g.count).fill(g.type));
     ok(L.validateLevels(bad14).some(e => e.includes('.parTimeMul')), 'parTimeMul 非数被拦截');
   }
 
-  console.log('=== 组 3：gradeFor parTimeMul（§6 步枪关卡时间门 ×1.5）===');
+  console.log('=== 组 3：gradeFor 时间门（§6；M5b+ parTimeMul 已回收）===');
   {
     const l7 = L.LEVELS[6];
     const l5 = L.LEVELS[4];
-    ok(l7.parTime === 180 && l7.parTimeMul === 1.5, 'L7 配置口径（parTime 180 / parTimeMul 1.5，§6 特例）', l7);
-    ok(l5.parTimeMul === undefined, 'L5 无 parTimeMul（AK 口径，缺省 1）');
+    ok(l7.parTime === 180 && l7.parTimeMul === undefined, 'L7 配置口径（parTime 180 / parTimeMul 已回收，§6）', l7);
+    ok(l5.reward.weapon === 'negev', 'L5 通关奖励 = 内格夫（M5b+ 换枪）', l5.reward);
     // 优等生统计：acc 90% / hs 50%（远超 S 双门），只考时间门
     const stats = (t) => ({ died: false, shotsFired: 1000, shotsHit: 900, headshots: 450, elapsedSec: t });
-    ok(L.gradeFor(stats(324), l7) === 'S', 'L7 S 门 = 180×1.2×1.5 = 324s 边界（≤ 收）');
-    ok(L.gradeFor(stats(324.1), l7) === 'A', 'L7 超时 0.1s → A');
-    ok(L.gradeFor(stats(216), l7) === 'S', 'L7 216s（无 parTimeMul 的老口径门）→ 有容忍后 S');
-    ok(L.gradeFor(stats(89), l5) === 'A', 'L5 时间门 = 74×1.2 = 88.8s：89s → A（无 mul 关卡不受影响）');
+    ok(L.gradeFor(stats(216), l7) === 'S', 'L7 S 门 = 180×1.2 = 216s 边界（≤ 收，容忍回收后收紧）');
+    ok(L.gradeFor(stats(216.1), l7) === 'A', 'L7 超时 0.1s → A');
+    ok(L.gradeFor(stats(300), l7) === 'A', 'L7 300s（旧 ×1.5 口径的 S）→ 回收后 A');
+    ok(L.gradeFor(stats(89), l5) === 'A', 'L5 时间门 = 74×1.2 = 88.8s：89s → A');
     ok(L.gradeFor(stats(88), l5) === 'S', 'L5 88s → S');
+    // 机制保留验证：parTimeMul 字段本身仍被 gradeFor 消费（当前无关卡使用，留给未来武器差异）
+    const mul = { parTime: 100, parTimeMul: 1.5 };
+    ok(L.gradeFor(stats(180), mul) === 'S', 'parTimeMul 机制仍在：100×1.2×1.5 = 180s 边界（≤ 收）');
+    ok(L.gradeFor(stats(180.1), mul) === 'A', 'parTimeMul 超时 0.1s → A');
   }
 
   console.log('=== 组 4：L6/L7 配置口径（§4 总表落地断言）===');

@@ -1521,8 +1521,9 @@ const SFX_FILES = {
   'ak47/bolt':   'assets/sfx/bolt-click.mp3',
   // M4① 新枪射击音：采样文件暂缺 → playWeaponSfx 返回 false 自动回退合成音
   // （M5a 起新枪有专属合成实现；听感不达标进 §10 B 级信号：排期补采样或调合成参数）
+  // M5b+ 换枪：内格夫射击采样暂缺 → 专属合成（synthNegevShot）；听感 §10 B 级观察
   'shotgun/shot': 'assets/sfx/shotgun-shot.wav',
-  'rifle/shot':   'assets/sfx/rifle-shot.wav',
+  'negev/shot':   'assets/sfx/negev-shot.wav',
   // M5a Boss 吼叫采样槽（暂缺文件 → playBossSfx 回退 playBossRoar 合成）
   'boss/roar': 'assets/sfx/boss-roar.wav',
 };
@@ -1564,9 +1565,8 @@ const WEAPON_SFX = {
     mechVolume:  0.55,
     pitchJitter: [0.96, 1.04],
   },
-  // M4① 新枪：射击采样暂缺回退专属合成音（M5a）；换弹 magOut/magIn 复用现有采样。
-  // bolt 槽缺省（泵动/栓动走专属合成 synthPumpSound/synthRifleBoltSound——通用枪机
-  // 采样对泵动枪音色不符；采样补齐后在 SFX_FILES 登记并恢复映射即可）。
+  // M4①/M5b+：射击采样暂缺回退专属合成音；换弹 magOut/magIn 复用现有采样。
+  // bolt 槽缺省（内格夫换弹链走专属合成 synthNegevBoltSound；采样补齐后登记恢复映射）。
   shotgun: {
     shot:        'shotgun/shot',
     magOut:      'ak47/magOut',
@@ -1575,13 +1575,13 @@ const WEAPON_SFX = {
     mechVolume:  0.55,
     pitchJitter: [0.94, 1.02],
   },
-  rifle: {
-    shot:        'rifle/shot',
+  negev: {
+    shot:        'negev/shot',
     magOut:      'ak47/magOut',
     magIn:       'ak47/magIn',
-    shotVolume:  0.5,
+    shotVolume:  0.55,   // 12.5 发/s 连响，单发音量压低防爆音
     mechVolume:  0.55,
-    pitchJitter: [0.97, 1.03],
+    pitchJitter: [0.95, 1.03],
   },
 };
 
@@ -1653,7 +1653,7 @@ function playWeaponSfx(slot, { volume, pitchRange } = {}) {
 const WEAPON_SYNTH_SHOT = {
   ak47: synthGunshot,
   shotgun: synthShotgunShot,
-  rifle: synthRifleShot,
+  negev: synthNegevShot,
 };
 
 function playGunshot() {
@@ -1753,56 +1753,47 @@ function synthShotgunShot() {
   osc.stop(now + 0.18);
 }
 
-/** 射手步枪「穿云」射击（合成）：高精度枪声——锐利 crack 瞬态 + 紧凑中频 + 干净短尾。 */
-function synthRifleShot() {
+/** 轻机枪「内格夫」射击（合成）：12.5 发/s 连响——短促中频弹壳声 + 轻低频，
+ *  单次触发刻意做轻（高频复用，节点量与脚步同量级）。 */
+function synthNegevShot() {
   if (!audioCtx) return;
   const now = audioCtx.currentTime;
 
-  // 锐利瞬态：带通 2400Hz 短噪声（crack——"穿云"的亮与脆）
-  const crackLen = audioCtx.sampleRate * 0.06;
-  const crackBuf = audioCtx.createBuffer(1, crackLen, audioCtx.sampleRate);
-  const crackData = crackBuf.getChannelData(0);
-  for (let i = 0; i < crackLen; i++) {
-    const t = i / crackLen;
-    crackData[i] = (Math.random() * 2 - 1) * Math.exp(-t * 30) * 0.5;
-  }
-  const crack = audioCtx.createBufferSource();
-  crack.buffer = crackBuf;
-  const bp = audioCtx.createBiquadFilter();
-  bp.type = 'bandpass';
-  bp.frequency.value = 2400;
-  bp.Q.value = 1.2;
-  const cg = audioCtx.createGain();
-  cg.gain.setValueAtTime(0.45, now);
-  cg.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
-  crack.connect(bp);
-  bp.connect(cg);
-  cg.connect(audioCtx.destination);
-  crack.start(now);
-  crack.stop(now + 0.07);
-
-  // 紧凑中频主体：比 AK 更快收尾（0.1s），干净不拖尾——步枪的"点名"感
-  const bodyLen = audioCtx.sampleRate * 0.1;
+  // 短噪声主体：带通 600Hz（机枪弹壳"哒"声），0.07s 干脆收尾
+  const bodyLen = audioCtx.sampleRate * 0.07;
   const bodyBuf = audioCtx.createBuffer(1, bodyLen, audioCtx.sampleRate);
   const bodyData = bodyBuf.getChannelData(0);
   for (let i = 0; i < bodyLen; i++) {
     const t = i / bodyLen;
-    bodyData[i] = (Math.random() * 2 - 1) * Math.exp(-t * 28) * 0.4;
+    bodyData[i] = (Math.random() * 2 - 1) * Math.exp(-t * 26) * 0.5;
   }
   const body = audioCtx.createBufferSource();
   body.buffer = bodyBuf;
-  const bp2 = audioCtx.createBiquadFilter();
-  bp2.type = 'bandpass';
-  bp2.frequency.value = 700;
-  bp2.Q.value = 0.8;
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 600;
+  bp.Q.value = 0.9;
   const bg = audioCtx.createGain();
-  bg.gain.setValueAtTime(0.35, now);
-  bg.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-  body.connect(bp2);
-  bp2.connect(bg);
+  bg.gain.setValueAtTime(0.3, now);
+  bg.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+  body.connect(bp);
+  bp.connect(bg);
   bg.connect(audioCtx.destination);
   body.start(now);
-  body.stop(now + 0.12);
+  body.stop(now + 0.09);
+
+  // 轻低频：100→60Hz 短促（连发时的"咚咚"底鼓，比 AK 的 120→30 浅）
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(100, now);
+  osc.frequency.exponentialRampToValueAtTime(60, now + 0.06);
+  const oscGain = audioCtx.createGain();
+  oscGain.gain.setValueAtTime(0.22, now);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+  osc.connect(oscGain);
+  oscGain.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + 0.08);
 }
 
 function playHitSound() {
@@ -1956,11 +1947,11 @@ function synthBoltSound() {
   osc.stop(now + 0.1);
 }
 
-// 机匣操作合成分发（M5a）：ak47 = 基线 synthBoltSound；霰弹/步枪见 WEAPON_SFX 槽位缺省注释
+// 机匣操作合成分发（M5a/M5b+）：ak47 = 基线 synthBoltSound；霰弹泵动 / 内格夫弹链见 WEAPON_SFX 槽位缺省注释
 const WEAPON_SYNTH_BOLT = {
   ak47: synthBoltSound,
   shotgun: synthPumpSound,
-  rifle: synthRifleBoltSound,
+  negev: synthNegevBoltSound,
 };
 
 /** 霰弹「裂空」泵动上膛（合成）：双段 clack——前后两行程噪声爆点，音色微差。 */
@@ -1991,16 +1982,39 @@ function synthPumpSound() {
   });
 }
 
-/** 射手步枪「穿云」栓动（合成）：金属上抬 + 后拉两段，比 AK 枪机更亮更机械。 */
-function synthRifleBoltSound() {
+/** 轻机枪「内格夫」换弹链（合成）：弹链箱拍合（低频闷响）+ 上膛双段，比栓动更钝更重。 */
+function synthNegevBoltSound() {
   if (!audioCtx) return;
   const now = audioCtx.currentTime;
-  [0, 0.09].forEach((delay, i) => {
+
+  // 弹链箱拍合：低通噪声闷响
+  const boxLen = audioCtx.sampleRate * 0.1;
+  const boxBuf = audioCtx.createBuffer(1, boxLen, audioCtx.sampleRate);
+  const boxData = boxBuf.getChannelData(0);
+  for (let j = 0; j < boxLen; j++) {
+    boxData[j] = (Math.random() * 2 - 1) * Math.exp(-(j / boxLen) * 14);
+  }
+  const box = audioCtx.createBufferSource();
+  box.buffer = boxBuf;
+  const lp = audioCtx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 500;
+  const lg = audioCtx.createGain();
+  lg.gain.setValueAtTime(0.2, now);
+  lg.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+  box.connect(lp);
+  lp.connect(lg);
+  lg.connect(audioCtx.destination);
+  box.start(now);
+  box.stop(now + 0.12);
+
+  // 上膛双段（比栓动低钝）
+  [0.14, 0.24].forEach((delay, i) => {
     const at = now + delay;
     const osc = audioCtx.createOscillator();
     osc.type = 'square';
-    osc.frequency.setValueAtTime(i === 0 ? 1400 : 1000, at);
-    osc.frequency.exponentialRampToValueAtTime(i === 0 ? 700 : 500, at + 0.05);
+    osc.frequency.setValueAtTime(i === 0 ? 700 : 520, at);
+    osc.frequency.exponentialRampToValueAtTime(i === 0 ? 380 : 300, at + 0.05);
     const g = audioCtx.createGain();
     g.gain.setValueAtTime(0.08, at);
     g.gain.exponentialRampToValueAtTime(0.001, at + 0.06);
@@ -3182,44 +3196,59 @@ function createShotgunModel() {
 }
 
 /**
- * 射手步枪「穿云」程序化低模（M4②）：长枪管 + 机匣 + 直弹匣 + 简易瞄具。
+ * 轻机枪「内格夫」程序化低模（M5b+ 换枪）：机匣 + 长枪管 + 下挂弹链箱 + 两脚架 + 提把。
  */
-function createRifleModel() {
+function createNegevModel() {
   const group = new THREE.Group();
-  group.name = 'fpsRifle';
+  group.name = 'fpsNegev';
 
-  const metal = new THREE.MeshStandardMaterial({ color: '#2e343c', roughness: 0.3, metalness: 0.75 });
+  const metal = new THREE.MeshStandardMaterial({ color: '#323840', roughness: 0.35, metalness: 0.7 });
   const dark = new THREE.MeshStandardMaterial({ color: '#1a1d22', roughness: 0.5, metalness: 0.3 });
-  const accent = new THREE.MeshStandardMaterial({ color: '#00d4ff', roughness: 0.3, emissive: '#00d4ff', emissiveIntensity: 0.4 });
+  const accent = new THREE.MeshStandardMaterial({ color: '#ffb347', roughness: 0.3, emissive: '#ffb347', emissiveIntensity: 0.35 });
 
-  // 长枪管
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.02, 0.34, 8), metal);
-  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.02, -0.3); group.add(barrel);
+  // 长枪管（LMG 身份：比 AK 明显更长更粗）
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.022, 0.4, 8), metal);
+  barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.02, -0.32); group.add(barrel);
 
-  // 消音/制退器
-  const brake = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.07, 8), dark);
-  brake.rotation.x = Math.PI / 2; brake.position.set(0, 0.02, -0.48); group.add(brake);
+  // 枪口消焰器
+  const brake = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.06, 8), dark);
+  brake.rotation.x = Math.PI / 2; brake.position.set(0, 0.02, -0.54); group.add(brake);
 
   // 机匣
-  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.1, 0.24), metal);
-  receiver.position.set(0, 0, -0.05); group.add(receiver);
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.11, 0.26), metal);
+  receiver.position.set(0, 0, -0.04); group.add(receiver);
 
-  // 直弹匣（下插）
-  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.14, 0.07), dark);
-  mag.position.set(0, -0.11, -0.02); mag.rotation.x = 0.08; group.add(mag);
+  // 下挂弹链箱（内格夫辨识件）
+  const ammoBox = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.13), dark);
+  ammoBox.position.set(0, -0.12, -0.04); group.add(ammoBox);
+  const ammoLid = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.015, 0.13), accent);
+  ammoLid.position.set(0, -0.075, -0.04); group.add(ammoLid);
+
+  // 提把
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, 0.12), dark);
+  handle.position.set(0, 0.09, -0.02); group.add(handle);
+  const handleLegL = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.035, 0.02), dark);
+  handleLegL.position.set(-0.008, 0.07, 0.03); group.add(handleLegL);
+  const handleLegR = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.035, 0.02), dark);
+  handleLegR.position.set(0.008, 0.07, 0.03); group.add(handleLegR);
+
+  // 两脚架（折叠斜置于枪管下）
+  const bipodGeo = new THREE.CylinderGeometry(0.006, 0.006, 0.16, 6);
+  const bipodL = new THREE.Mesh(bipodGeo, dark);
+  bipodL.position.set(-0.02, -0.06, -0.38); bipodL.rotation.z = 0.35; bipodL.rotation.x = 0.2; group.add(bipodL);
+  const bipodR = new THREE.Mesh(bipodGeo, dark);
+  bipodR.position.set(0.02, -0.06, -0.38); bipodR.rotation.z = -0.35; bipodR.rotation.x = 0.2; group.add(bipodR);
 
   // 枪托
-  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.09, 0.22), dark);
-  stock.position.set(0, -0.02, 0.17); group.add(stock);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.1, 0.2), dark);
+  stock.position.set(0, -0.03, 0.16); group.add(stock);
 
-  // 简易瞄具（镜身 + 前后镜片框）
-  const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.12, 8), dark);
-  scope.rotation.x = Math.PI / 2; scope.position.set(0, 0.085, -0.05); group.add(scope);
-  const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.012, 8), accent);
-  lens.rotation.x = Math.PI / 2; lens.position.set(0, 0.085, -0.11); group.add(lens);
+  // 机械瞄具（准星片，无镜——LMG 不点名）
+  const sightPost = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.03, 0.008), accent);
+  sightPost.position.set(0, 0.075, -0.2); group.add(sightPost);
 
   const muzzle = new THREE.Object3D();
-  muzzle.name = 'muzzle'; muzzle.position.set(0, 0.02, -0.52); group.add(muzzle);
+  muzzle.name = 'muzzle'; muzzle.position.set(0, 0.02, -0.58); group.add(muzzle);
 
   return group;
 }
@@ -3646,12 +3675,12 @@ function cancelReload() {
 // ============================================
 // 切枪框架（M4② §5.4）
 // ============================================
-const WEAPON_SLOTS = ['ak47', 'shotgun', 'rifle'];   // 数字键 1/2/3 与 HUD 槽位顺序
+const WEAPON_SLOTS = ['ak47', 'shotgun', 'negev'];   // 数字键 1/2/3 与 HUD 槽位顺序
 const WEAPON_SWITCH_TIME = 0.4;   // 切枪动画时长（§5.4：无伤害窗口，不能用来取消后摇）
 
 let weaponSwitchT = 0;            // >0 = 切枪动画剩余时间（收枪 0.2s → 换模 → 抬枪 0.2s）
 let weaponSwitchPending = null;   // 收枪段结束后要换上的武器 id
-let weaponModels = null;          // { ak47, shotgun, rifle }：camera 子节点表（init 装配）
+let weaponModels = null;          // { ak47, shotgun, negev }：camera 子节点表（init 装配）
 
 /** 玩家拥有的武器（存档 weapons 列表 ∩ 槽位；L3 关内霰弹未解锁即天然不可切 ✓§4） */
 function ownedWeapons() {
@@ -3712,7 +3741,7 @@ function updateWeaponSwitch(dt) {
   }
 }
 
-/** HUD 槽位条：1 AK / 2 裂空 / 3 穿云（owned 亮、未拥有灰、当前高亮） */
+/** HUD 槽位条：1 AK / 2 裂空 / 3 内格夫（owned 亮、未拥有灰、当前高亮） */
 function renderWeaponSlots() {
   const owned = ownedWeapons();
   WEAPON_SLOTS.forEach((id, i) => {
@@ -5245,14 +5274,14 @@ function init() {
   shotgunModel.userData.baseRotation = shotgunModel.rotation.clone();
   camera.add(shotgunModel);
 
-  const rifleModel = createRifleModel();
-  rifleModel.position.set(0.22, -0.2, -0.5);
-  rifleModel.rotation.set(0, -0.08, 0);
-  rifleModel.userData.basePosition = rifleModel.position.clone();
-  rifleModel.userData.baseRotation = rifleModel.rotation.clone();
-  camera.add(rifleModel);
+  const negevModel = createNegevModel();
+  negevModel.position.set(0.22, -0.2, -0.5);
+  negevModel.rotation.set(0, -0.08, 0);
+  negevModel.userData.basePosition = negevModel.position.clone();
+  negevModel.userData.baseRotation = negevModel.rotation.clone();
+  camera.add(negevModel);
 
-  weaponModels = { ak47: fpsWeapon, shotgun: shotgunModel, rifle: rifleModel };
+  weaponModels = { ak47: fpsWeapon, shotgun: shotgunModel, negev: negevModel };
   setWeaponModelVisible(currentWeaponId);
   console.log('  Camera children:', camera.children.length);
 

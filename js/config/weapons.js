@@ -73,29 +73,35 @@ export const WEAPONS = {
       fade: 0.22
     }
   },
-  // ---- M4① 射手步枪「穿云」（§5.4：精英/Boss 的答案；L5 通关解锁）----
-  rifle: {
-    id: 'rifle',
-    name: '穿云',
-    // ---- 伤害 / 射速 / 弹匣 / 换弹（§5.4 表）----
-    damage: 85,
-    headshotMult: 2.5,      // 爆头 ×2.5 = 212（§5.4）
-    fireInterval: 0.5,
-    magSize: 8,
-    reloadTime: 1.8,
-    // ---- 层 1：移动 inaccuracy（§8.0 迁移清单定值）----
-    spreadPerSpeed: 0.03,
-    spreadAirMult: 2.0,
-    // ---- 层 2：后坐 + spray pattern（数值为设计占位 ⚗️ playtest 观察）----
-    recoilPerShot: 0.014,
+  // ---- M5b+ 轻机枪「内格夫」（用户点单换枪：射手步枪「穿云」除名；L5 通关解锁）----
+  // 定位「召唤潮/车轮战的答案」：火力凶猛档（用户确认）——持续 DPS 212 略超 AK
+  // （150×24÷(150×0.08+5)），9→12s 不间断火力压制召唤潮/补位车轮。
+  // 三重制衡（§5.4「侧向展开不是上位替代」）：爆头仅 ×1.5（对精英/Boss 单体有效 DPS
+  // ≈140 < AK 155，单体正解仍是 AK）、移动散布惩罚全游戏最重（0.11，压制需站桩）、
+  // 5s 换弹真空期。§10 B 级观察：若出现「新枪上位替代」按 playtest 削。
+  negev: {
+    id: 'negev',
+    name: '内格夫',
+    // ---- 伤害 / 射速 / 弹匣 / 换弹（用户确认火力凶猛档）----
+    damage: 24,             // 单发基础伤害
+    headshotMult: 1.5,      // 爆头 ×1.5 = 36——弹幕武器不做点名（点名的答案在 AK）
+    fireInterval: 0.08,     // 12.5 发/s（AK 8.3）
+    magSize: 150,           // 弹链：12s 不间断火力（AK 3.6s 一断）
+    reloadTime: 5.0,        // 换弹链是长真空期（AK 1.5 的 3.3 倍）
+    // ---- 层 1：移动 inaccuracy（全游戏最差：压制需站桩/半站桩）----
+    spreadPerSpeed: 0.11,   // rad/(m/s)：开火移速 2.4 → 0.264 rad → 10m 处散布半径约 2.6m
+    spreadAirMult: 3.0,
+    // ---- 层 2：后坐 + spray pattern（设计占位 ⚗️ playtest 观察）----
+    recoilPerShot: 0.006,   // 单发轻但 12.5 发/s 持续施压（爬升速率 ≈ AK 的 0.75）
     recoilYawPerShot: 0.005,
-    recoilMaxPitch: 0.32,
-    recoilMaxYaw: 0.06,
-    sprayPattern: [0, 0.5, -0.6, 0.8],   // 4 发小图案（§8.0：步枪 = 4 元素小数组）
+    recoilMaxPitch: 0.28,
+    recoilMaxYaw: 0.08,
+    // 12 元素横扫：先小幅爬升后大幅左右横漂（弹链扫射的固定形状，可练习）
+    sprayPattern: [0, 0.3, -0.3, 0.5, -0.5, 0.7, -0.7, 0.9, -0.9, 1.0, -1.0, 0.8],
     // ---- 弹丸 / 射程衰减 / 曳光 ----
     pelletCount: 1,
-    damageFalloff: null,    // 无衰减
-    tracerCount: 1,
+    damageFalloff: null,    // 无衰减——压制价值在中近距离密度，远程由散布自然惩罚
+    tracerCount: 2,         // 12.5 发/s 曳光合并 ≤2 条（§9 性能口径）
     tracer: {
       speed: 100,
       length: 7,

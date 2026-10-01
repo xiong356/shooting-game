@@ -31,10 +31,11 @@ export const CRAB_CONFIG = { avoidRadius: 1.0, avoidStrength: 8.0 };
 //   L7  主宰 6000 独立推导（§5.3 脚注†，不吃 k；召唤蟹走 MONSTER_SPECS 蟹基座 × k）
 // parTime = §4 纯输出时长 ×8（§6 公式：38=4.8×8 … 114=14.2×8），S 档时间门 = parTime×1.2。
 // L7 特例：parTime 固定 180（§6 Boss 关不适用 ×8 公式）。
-// parTimeMul（§6 步枪关卡容忍）：L6 起玩家已持有穿云，步枪有效 DPS ≈ AK 的 1/1.5，
-// 故 S 档时间门再 ×1.5；gradeFor 消费（缺省 1）。playtest 若步枪玩家 S 达成率 >20% 可回收。
+// parTimeMul（§6 武器差异容忍）：M5b+ 已回收——tolerance 是穿云（持续 DPS 仅 AK 的 0.59）
+// 时代的补偿；换装内格夫（持续 212 ≈ AK）后失去依据，L6/L7 S 门收紧回 parTime×1.2。
+// 机制保留（gradeFor/validateLevels 仍支持该字段），当前无关卡使用。
 // reward.unlock 指向下一关；L7 unlock:7 指向自身（通关后全关可重玩，unlocked 封顶由 save.js 把守）。
-// 注意：L4 总数 9 / L6 总数 11 > maxAlive 8——补位队列是 M5b 交付，先全量刷（§4.1 排期一致）。
+// 注意：L4 总数 9 / L6 总数 11 > maxAlive 8——M5b 补位队列已接线（开局同场 8，其余进 FIFO 队列）。
 export const LEVELS = [
   { id: 1, name: '峡谷初见', hpMul: 1.0, dmgMul: 1.0, spdMul: 1.0,
     spawns: [{ type: 'red', count: 4 }], layout: 'default',
@@ -51,18 +52,18 @@ export const LEVELS = [
     parTime: 65, maxAlive: 8, reward: { unlock: 5 } },
   { id: 5, name: '暗影先锋', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
     spawns: [{ type: 'eliteRed', count: 1 }, { type: 'red', count: 3 }, { type: 'blue', count: 3 }], layout: 'variantB',
-    parTime: 74, maxAlive: 8, reward: { unlock: 6, weapon: 'rifle' } },
+    parTime: 74, maxAlive: 8, reward: { unlock: 6, weapon: 'negev' } },
   // ---- M5a：L6 毕业考 + L7 Boss 关（§4 总表）----
   { id: 6, name: '风暴前夕', hpMul: 1.2, dmgMul: 1.2, spdMul: 1.05,
     spawns: [{ type: 'eliteRed', count: 1 }, { type: 'eliteBlue', count: 1 }, { type: 'red', count: 3 }, { type: 'blue', count: 3 }, { type: 'crab', count: 3 }],
     layout: 'variantB',
-    parTime: 114, parTimeMul: 1.5, maxAlive: 8, reward: { unlock: 7 } },
+    parTime: 114, maxAlive: 8, reward: { unlock: 7 } },
   // L7：Boss「主宰」三阶段（§5.3）。spawns 留空——Boss 不入 spawns（怪种 schema 注释），
   // startGame 消费 boss 字段单独生成；召唤等阶段 adds 由 Boss 状态机自管（§4.1），
   // 补位队列不适用 Boss 关。行为参数全部 [PLACEHOLDER]+推导，⚗️ M6 playtest 收口。
   { id: 7, name: '主宰降临', hpMul: 1.0, dmgMul: 1.0, spdMul: 1.0,
     spawns: [], layout: 'default',
-    parTime: 180, parTimeMul: 1.5, maxAlive: 8, reward: { unlock: 7 },
+    parTime: 180, maxAlive: 8, reward: { unlock: 7 },
     boss: {
       // 逐阶段追速（用户点单「每进下一阶段速度更快」，凶猛档）：P1 基线 3.2，
       // P2 4.4 > 走路 4.2（追着走路玩家跑）、P3 5.6 接近红怪 5.0；疾跑 7.2 仍可脱战
@@ -200,8 +201,8 @@ export function splitSpawns(composition, maxAlive) {
 // ---- schema 取值域 ----
 // 怪种：红/蓝（现有）+ 蟹/精英红/精英蓝（M3）；'boss' 不入 spawns（§4.1 Boss 关 adds 自管）。
 const SPAWN_TYPES = ['red', 'blue', 'crab', 'eliteRed', 'eliteBlue'];
-// 武器 id（M4① 定枪收紧：§8.1「reward.weapon 枚举 M4 定枪时收紧」）
-const WEAPON_IDS = ['ak47', 'shotgun', 'rifle'];
+// 武器 id（§8.1「reward.weapon 枚举」；M5b+ 换枪：rifle 除名 → negev）
+const WEAPON_IDS = ['ak47', 'shotgun', 'negev'];
 
 // ---- 场地布局预设（§5.2 布局即数据，M2①）----
 // 关卡行 layout 字段引用此处预设名；game.js applyLayout 按 descriptor 重建障碍组。

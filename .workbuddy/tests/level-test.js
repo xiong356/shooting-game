@@ -136,6 +136,17 @@ async function freshModule(relPath, tag, initialStorage) {
     ok(s.weapons[0] === 'ak47' && s.weapons.includes('shotgun'), 'ak47 永远在列（消毒补回）', s.weapons);
   }
 
+  console.log('=== 组 7b：换枪迁移（M5b+ rifle → negev，不炸档）===');
+  {
+    const { mod } = await freshModule('js/save.js', 'migrate-rifle', {
+      'wk.pve.save.v1': JSON.stringify({ schemaVersion: 1, unlocked: 5, weapons: ['ak47', 'shotgun', 'rifle'], revision: 3 }),
+    });
+    const s = mod.getSave();
+    ok(s.unlocked === 5 && s.revision === 3, '其余字段原样保留', s);
+    ok(s.weapons.includes('negev') && !s.weapons.includes('rifle'), '老档 rifle 平移为 negev', s.weapons);
+    ok(s.weapons.filter(w => w === 'negev').length === 1, '迁移不产生重复条目', s.weapons);
+  }
+
   console.log('=== 组 8：gradeFor 评级矩阵（§6 S/A/B/F）===');
   {
     ok(typeof L.gradeFor === 'function', 'levels.js 导出 gradeFor（game.js/门禁共用实现）');
@@ -217,14 +228,17 @@ async function freshModule(relPath, tag, initialStorage) {
     // （default 两道 0.3m 纵隔断）；横放仅旋转向、数学同路，不重复建组。
   }
 
-  console.log('=== 组 11：武器奖励配置（M4① §5.4）===');
+  console.log('=== 组 11：武器奖励配置（M4① §5.4 / M5b+ 换枪 negev）===');
   {
     ok(L.LEVELS[2].reward.weapon === 'shotgun', 'L3 通关奖励 = 霰弹枪「裂空」', L.LEVELS[2].reward);
-    ok(L.LEVELS[4].reward.weapon === 'rifle', 'L5 通关奖励 = 射手步枪「穿云」', L.LEVELS[4].reward);
+    ok(L.LEVELS[4].reward.weapon === 'negev', 'L5 通关奖励 = 轻机枪「内格夫」（穿云除名）', L.LEVELS[4].reward);
     // 枚举收紧：非法武器 id 被 validateLevels 拦截（WEAPON_IDS）
     const bad = JSON.parse(JSON.stringify(L.LEVELS));
     bad[0].reward.weapon = 'bazooka';
     ok(L.validateLevels(bad).some(e => e.includes('reward.weapon')), '非法武器 id 被 schema 拦截（WEAPON_IDS 收紧）');
+    const old = JSON.parse(JSON.stringify(L.LEVELS));
+    old[0].reward.weapon = 'rifle';
+    ok(L.validateLevels(old).some(e => e.includes('reward.weapon')), '除名武器 rifle 被 WEAPON_IDS 拦截（配置层不可回潮）');
     ok(L.validateLevels(L.LEVELS).length === 0, '合法配置仍全数通过');
   }
 

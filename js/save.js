@@ -130,7 +130,10 @@ function mergeSaves(a, b) {
 function normalizeSave(p) {
   const s = defaultSave();
   if (Number.isInteger(p.unlocked)) s.unlocked = Math.min(Math.max(1, p.unlocked), SAVE_MAX_UNLOCK);
-  if (Array.isArray(p.weapons)) s.weapons = p.weapons.filter(w => typeof w === 'string' && w);
+  if (Array.isArray(p.weapons)) s.weapons = p.weapons
+    .filter(w => typeof w === 'string' && w)
+    // M5b+ 换枪迁移：射手步枪「穿云」除名 → 老档 rifle 平移为 negev（不炸档、进度保留）
+    .map(w => (w === 'rifle' ? 'negev' : w));
   if (!s.weapons.includes('ak47')) s.weapons.unshift('ak47');   // ak47 永远在列
   if (p.levels && typeof p.levels === 'object') {
     for (const key of Object.keys(p.levels)) {
