@@ -155,6 +155,23 @@ const ok = (cond, label, extra) => {
   const backAk = await evalJS('JSON.stringify({ current: window.__SNAPSHOT__.weapons().current, ammo: window.__SNAPSHOT__().currentAmmo })').then(s => JSON.parse(s));
   ok(backAk.current === 'ak47' && backAk.ammo === 30, '切回 AK → 30 发（弹药分存记忆）', backAk);
 
+  // ---- 3d+. M5b+ 内格夫：L5 奖励发枪链路 + 移速惩罚纯函数口径 ----
+  await evalJS('window.__SNAPSHOT__.loadLevel(5)');
+  await sleep(600);
+  await evalJS('window.__SNAPSHOT__.cheatKillAll()');
+  await sleep(3000);   // L5 结算 → 奖励 negev 同事务写盘
+  await evalJS('window.__SNAPSHOT__.loadLevel(4)');   // 回 playing 态
+  await sleep(500);
+  await evalJS('window.__SNAPSHOT__.switchWeapon("negev")');
+  await sleep(700);
+  const negevState = await evalJS('JSON.stringify({ w: window.__SNAPSHOT__.weapons(), ammo: window.__SNAPSHOT__().currentAmmo })').then(s => JSON.parse(s));
+  ok(negevState.w.current === 'negev' && negevState.w.owned.includes('negev') && negevState.ammo === 150,
+    'L5 通关 → 内格夫（150 弹链）+ 切枪生效', negevState);
+  const spd = await evalJS('JSON.stringify({ negevSprint: window.__SNAPSHOT__.speedFor({ firing: false, reloading: false, sprintInput: 1, inputMagnitude: 1, moveSpeedMul: 0.85 }), fireCap: window.__SNAPSHOT__.speedFor({ firing: true, reloading: false, sprintInput: 1, inputMagnitude: 1, moveSpeedMul: 0.85 }), akSprint: window.__SNAPSHOT__.speedFor({ firing: false, reloading: false, sprintInput: 1, inputMagnitude: 1 }) })').then(s => JSON.parse(s));
+  ok(Math.abs(spd.negevSprint - 6.12) < 1e-6, '内格夫疾跑 = 7.2×0.85 = 6.12（> P3 主宰 5.6，脱战承诺不破）', spd);
+  ok(spd.fireCap === 2.4, '开火 2.4 上限豁免惩罚（口径经用户确认）', spd);
+  ok(spd.akSprint === 7.2, '缺省无惩罚（AK/霰弹不受影响）', spd);
+
   // ---- 3e. M5a/M5b+ Boss 三阶段：入场/递进召唤/类别封顶/转场回血/胜利链路（§5.3）----
   // 节奏：入场 1.5s → P1 首波（+2.5s）蟹×3；每破阶段回 2.5s 后出新配方波，间隔 15s。
   // 探针保命三件套（凶猛档 P3 追速 5.6 + 全阶段召唤）：转场后把 Boss 传回远端、

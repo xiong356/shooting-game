@@ -2951,12 +2951,21 @@ function updateMovement(dt) {
  * 档位 + 输入模拟量 → 本帧目标速度。
  * 优先级：开枪 > 换弹 > 疾跑 > 慢走。
  */
-function getTargetMoveSpeed({ firing, reloading, sprintInput, inputMagnitude }) {
+/**
+ * 目标移速（纯函数，walk-probe/探针 speedFor 直调真实实现）。
+ * @param {Object} o
+ * @param {number} [o.moveSpeedMul] per-weapon 移速惩罚（M5b+ 换枪：内格夫 0.85——
+ *        作用于走路/疾跑/换弹态；开火的 2.4 上限不受影响（口径经用户确认）。
+ *        底线约束：疾跑 7.2×0.85=6.12 > P3 主宰追速 5.6，「疾跑必能脱战」承诺不破。
+ *        缺省 1（AK/霰弹无惩罚，老调用零改动）。
+ */
+function getTargetMoveSpeed({ firing, reloading, sprintInput, inputMagnitude, moveSpeedMul }) {
   let base;
   if (firing)         base = MOVE_SPEED_FIRING;
   else if (reloading) base = MOVE_SPEED_RELOAD;
   else                base = MOVE_SPEED_WALK + (MOVE_SPEED_SPRINT - MOVE_SPEED_WALK) * sprintInput;
-  return base * inputMagnitude;   // 摇杆模拟量只在这里乘一次
+  const mul = firing ? 1 : (moveSpeedMul || 1);
+  return base * inputMagnitude * mul;   // 摇杆模拟量只在这里乘一次；武器惩罚同点施加
 }
 
 /**
@@ -3003,6 +3012,7 @@ function updateLocomotion(dt, inputMagnitude) {
     reloading: locomotion.reloading,
     sprintInput,
     inputMagnitude,
+    moveSpeedMul: AK.moveSpeedMul,   // per-weapon 移速惩罚（M5b+：内格夫 0.85，其余缺省 1）
   });
 
   // 混合量指数趋近（与 updateRecoil 的 Math.exp(-k*dt) 同一手法，帧率无关）+ 残渣归零
