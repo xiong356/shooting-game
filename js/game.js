@@ -95,10 +95,15 @@ const state = {
   headshots: 0,      // 爆头命中次数
   shotsFired: 0,
   shotsHit: 0,
+  weaponShots: {},   // per-weapon 开火计数（M6 标定埋点：§10 武器使用率信号的数据源）
   combo: 0,          // 当前连续命中
   maxCombo: 0,
   score: 0,
 };
+
+// 调试对局标记：cheatKillAll 置位后，本局结算样本带 auto: true（M6——探针/调试局的
+// 假用时不得污染 §6 P75 标定池；startGame 复位）
+let debugFightUsed = false;
 
 // ============================================
 // THREE.JS SETUP
@@ -3440,6 +3445,7 @@ function shoot() {
   shootTimer = AK.fireInterval;
   state.currentAmmo--;
   state.shotsFired++;
+  state.weaponShots[currentWeaponId] = (state.weaponShots[currentWeaponId] || 0) + 1;   // M6：per-weapon 使用率埋点（§10「AK 使用率」信号）
 
   // Apply recoil: vertical kick + pattern-driven horizontal (spray pattern, deterministic)
   recoilPitch = Math.min(recoilPitch + AK.recoilPerShot, AK.recoilMaxPitch);
@@ -4778,6 +4784,8 @@ function startGame(levelId) {
   state.combo = 0;
   state.maxCombo = 0;
   state.score = 0;
+  state.weaponShots = {};
+  debugFightUsed = false;
   shootTimer = 0;
   canShoot = true;
   recoilPitch = 0;
@@ -5360,16 +5368,20 @@ function init() {
 // 池化求值。M0.5④：存储与池化统计已迁入 js/save.js（§7 实现载体），此处只做
 // 「从 state 取数 → 推给存储层」的胶水。
 /** 一局真实结束（victory/death）时记录一条样本；不可达的 'time' 分支不计。
- *  M5b：补 elapsedSec（§6 S 档时间标定埋点）——parTime P75 收紧待 M6 用此数据。 */
+ *  M5b：补 elapsedSec（§6 S 档时间标定埋点）；M6：补 level（per-level P75 前提）、
+ *  auto（调试对局隔离）、weaponShots（§10 武器使用率信号）。 */
 function recordCalibSample(reason) {
   if (reason !== 'victory' && reason !== 'death') return;
   pushCalibSample({
     ts: Date.now(),
     result: reason,
+    level: state.currentLevelId,
     shotsFired: state.shotsFired,
     shotsHit: state.shotsHit,
     headshots: state.headshots,
     elapsedSec: (performance.now() - state.levelStartTime) / 1000,
+    auto: debugFightUsed || undefined,   // 调试对局标记（undefined 序列化时省略，历史样本视为 real）
+    weaponShots: { ...state.weaponShots },
   });
 }
 
@@ -5496,6 +5508,7 @@ window.__SNAPSHOT__.clearAdds = function () {
 // 调试专用击杀钩子：§8.1「探针脚本逐关自动验收」需要探针能主动打完一局；
 // 只挂在本调试面下（正常游玩不可达）。逐轮头击直至清场（红 225HP 需 4 轮）。
 window.__SNAPSHOT__.cheatKillAll = function () {
+  debugFightUsed = true;   // 本局结算样本将带 auto: true——不污染标定池（M6）
   spawnQueue.length = 0;   // 调试面语义 = 清场：队列一并作废，否则补位会让探针胜利路径打不完
   let guard = 20;
   while (monsters.some(m => !m.userData.dying) && guard-- > 0) {

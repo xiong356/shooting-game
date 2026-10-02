@@ -242,6 +242,28 @@ async function freshModule(relPath, tag, initialStorage) {
     ok(L.validateLevels(L.LEVELS).length === 0, '合法配置仍全数通过');
   }
 
+  console.log('=== 组 12：calibSummary 标定池（M6：auto 隔离 / per-level 分桶 / 武器使用率）===');
+  {
+    const { mod } = await freshModule('js/save.js', 'calibsum');
+    mod.clearCalibSamples();
+    // 灌入：2 局真实（L5 胜 40s / L5 胜 30s）+ 1 局调试（auto，L7 胜 8s——不得进统计）
+    mod.pushCalibSample({ ts: 1, result: 'victory', level: 5, shotsFired: 40, shotsHit: 30, headshots: 10, elapsedSec: 40, weaponShots: { ak47: 20, negev: 20 } });
+    mod.pushCalibSample({ ts: 2, result: 'victory', level: 5, shotsFired: 30, shotsHit: 25, headshots: 5, elapsedSec: 30, weaponShots: { ak47: 30 } });
+    mod.pushCalibSample({ ts: 3, result: 'victory', level: 7, shotsFired: 100, shotsHit: 90, headshots: 40, elapsedSec: 8, auto: true, weaponShots: { negev: 100 } });
+    mod.pushCalibSample({ ts: 4, result: 'victory', shotsFired: 10, shotsHit: 8, headshots: 2, elapsedSec: 20 });   // 旧格式：无 level 无 auto
+    const sum = mod.calibSummary();
+    ok(sum.n === 4 && sum.nReal === 3 && sum.nAuto === 1, 'real/auto 分列（n4 = real3 + auto1）', sum);
+    ok(Math.abs(sum.pooledAccuracy - 63 / 80) < 1e-9, '池化命中率只算 real 局（63/80，auto 局 90/100 被排除）', sum.pooledAccuracy);
+    ok(sum.medianVictorySec === 30, '胜利用时中位数排除 auto 的 8s（40/30/20 → 中位 30）', sum.medianVictorySec);
+    ok(sum.perLevel['5'] && sum.perLevel['5'].victories === 2 && Math.abs(sum.perLevel['5'].p75Sec - 40) < 1e-9,
+      'per-level 分桶：L5 胜2 局 P75 = 40s', sum.perLevel);
+    ok(sum.perLevel['7'] === undefined, 'auto 局不进 perLevel（调试局隔离）', sum.perLevel);
+    ok(sum.weaponUsage.ak47 === 50 && sum.weaponUsage.negev === 20, '武器使用率聚合（auto 局的 100 发不计）', sum.weaponUsage);
+    const akShare = sum.weaponUsage.ak47 / (sum.weaponUsage.ak47 + sum.weaponUsage.negev);
+    ok(akShare > 0.3, 'AK 占比 ' + (akShare * 100).toFixed(0) + '% ≥30% —— §10 B 级信号可计算');
+    mod.clearCalibSamples();
+  }
+
   console.log('');
   console.log('结果: ' + pass + ' 通过 / ' + fail + ' 失败');
   process.exit(fail > 0 ? 1 : 0);

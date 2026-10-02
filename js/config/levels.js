@@ -65,9 +65,11 @@ export const LEVELS = [
     spawns: [], layout: 'default',
     parTime: 180, maxAlive: 8, reward: { unlock: 7 },
     boss: {
-      // 逐阶段追速（用户点单「每进下一阶段速度更快」，凶猛档）：P1 基线 3.2，
-      // P2 4.4 > 走路 4.2（追着走路玩家跑）、P3 5.6 接近红怪 5.0；疾跑 7.2 仍可脱战
-      chaseSpeeds: [3.2, 4.4, 5.6],
+      // 逐阶段追速（用户点单「每进下一阶段速度更快」；M6 playtest 下调——原凶猛档
+      // [3.2,4.4,5.6] 触发 §10 A 级数值墙：L7 多次尝试未通关，速度+召唤海双压力源）：
+      // P1 3.0 / P2 3.8 / P3 4.4——保留逐阶段加速意图，P3 从「追着走路玩家跑」降为
+      // 「可风筝的压迫」；低于红怪 5.0、疾跑 7.2（内格夫 6.12）余量全面放宽
+      chaseSpeeds: [3.0, 3.8, 4.4],
       // 近战拍击（§5.3 P1：红怪同款放大；伤害走 MONSTER_SPECS.boss.meleeDamage 35）
       melee: { range: 4.0, hitRange: 4.5, windup: 0.7, strike: 0.2, lungeSpeed: 4, cooldown: 1.6 },
       // 法球三连（§5.3 P2：蓝怪吟唱放大，0.8s 预警；伤害走 projDamage 15）
@@ -81,8 +83,9 @@ export const LEVELS = [
           2: [{ type: 'crab', count: 2 }, { type: 'red', count: 1 }, { type: 'blue', count: 1 }],
           3: [{ type: 'crab', count: 2 }, { type: 'red', count: 1 }, { type: 'blue', count: 1 }, { type: 'elite', count: 1 }],
         },
-        // 同场按类别封顶（用户点单）：达上限的类别本波跳过、计时照常重置
-        caps: { crab: 6, humanoid: 4, elite: 2 },
+        // 同场按类别封顶（M6 playtest 下调——原 {6,4,2} 极值 12 只随数值墙一并收回）：
+        // {4,3,1} 极值压力 8 只 = 与常规关 maxAlive 看齐，Boss 召唤不再超过毕业考
+        caps: { crab: 4, humanoid: 3, elite: 1 },
       },
       // 破阶段转场：2s 无敌 + 吼叫震屏 + 玩家回 30 HP（§5.3；heal 30 ⚗️ 满血进 P3 则降 20）
       transition: { invuln: 2, heal: 30, shakeAmp: 0.12, shakeTime: 0.7 },

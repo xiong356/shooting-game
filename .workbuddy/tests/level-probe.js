@@ -226,7 +226,7 @@ const ok = (cond, label, extra) => {
   await evalJS('window.__SNAPSHOT__.teleportBoss(6, -40)');
   await sleep(2200);
   const bossC3 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
-  ok(bossC3.state === 'chase' && bossC3.chaseSpeed === 5.6, 'P3 追速升到 5.6（逐阶段加速凶猛档）', bossC3);
+  ok(bossC3.state === 'chase' && bossC3.chaseSpeed === 4.4, 'P3 追速升到 4.4（逐阶段加速，M6 下调包）', bossC3);
 
   // P3 波：蟹×2 + 红×1 + 蓝×1 + 精英×1（轮换伪类型 → 精英红）
   await evalJS('window.__SNAPSHOT__.setPlayerHealth(100)');

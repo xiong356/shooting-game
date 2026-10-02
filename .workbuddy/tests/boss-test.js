@@ -126,15 +126,15 @@ const expandW = (groups) => groups.flatMap(g => Array(g.count).fill(g.type));
     ok(l7.reward.unlock === 7, 'L7 reward.unlock 自指（通关后全关可重玩，封顶由 save.js 把守）');
     ok(JSON.stringify(l7.boss.phases) === '[0.7,0.4]', 'boss.phases [0.7, 0.4]（HUD 刻度线同源 §9）');
     ok(l7.boss.transition.heal === 30 && l7.boss.transition.invuln === 2, '转场回血 30 / 无敌 2s（§5.3 ⚗️）');
-    // M5b+ 机制改版（用户点单）：逐阶段加速 + 递进召唤 + 类别封顶
-    ok(JSON.stringify(l7.boss.chaseSpeeds) === '[3.2,4.4,5.6]', '逐阶段追速 3.2/4.4/5.6（凶猛档，P2/P3 越过走路 4.2）', l7.boss.chaseSpeeds);
+    // M5b+ 机制改版（用户点单）：逐阶段加速 + 递进召唤 + 类别封顶；M6 下调包落地
+    ok(JSON.stringify(l7.boss.chaseSpeeds) === '[3,3.8,4.4]', '逐阶段追速 3.0/3.8/4.4（M6 下调包：P3 回到可风筝区间）', l7.boss.chaseSpeeds);
     ok(l7.boss.summon.interval === 15 && l7.boss.summon.firstDelay === 2.5, '波间隔 15s / 首波延迟 2.5s（用户点单）');
     ok(JSON.stringify(expandW(l7.boss.summon.waves['1'])) === '["crab","crab","crab"]', 'P1 波 = 蟹×3（从 P1 开始召唤）');
     ok(JSON.stringify(expandW(l7.boss.summon.waves['2'])) === '["crab","crab","red","blue"]', 'P2 波 = 蟹×2+红×1+蓝×1', l7.boss.summon.waves['2']);
     const w3 = l7.boss.summon.waves['3'];
     ok(w3.some(e => e.type === 'elite') && w3.length === 4, 'P3 波 = 蟹×2+红×1+蓝×1+精英×1（轮换伪类型）', w3);
     const caps = l7.boss.summon.caps;
-    ok(caps.crab === 6 && caps.humanoid === 4 && caps.elite === 2, '类别封顶 蟹6/红蓝4/精英2', caps);
+    ok(caps.crab === 4 && caps.humanoid === 3 && caps.elite === 1, '类别封顶 蟹4/红蓝3/精英1（M6 下调：极值 8 = 常规关 maxAlive）', caps);
   }
 
   console.log('=== 组 5：召唤类别映射与封顶判定（bossSummonCategory / bossCanSummon，配置层共用实现）===');

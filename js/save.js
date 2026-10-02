@@ -59,24 +59,55 @@ export function clearCalibSamples() {
   removeKey(CALIB_KEY);
 }
 
-/** 池化统计：所有样本原始计数相加后再求比率（对各局比率取平均会因样本量不同失真）。
- *  M5b：补胜利局用时统计（elapsedSec 埋点）——§6 S 档 parTime P75 收紧的数据入口，
- *  只做只读汇总，不参与评级。 */
+/** 池化统计（M6 扩展）。real = 非 auto 样本（调试对局不污染标定池；历史样本无 auto
+ *  字段视为 real——M0 n=14 与用户 playtest 兼容）。
+ *  输出：命中率/爆头率池化（口径不变）+ 胜利局用时 + **per-level 用时 P50/P75**
+ *  （§6 parTime 收紧的数据入口，需 M6+ 样本的 level 字段）+ 武器使用率聚合
+ *  （§10「AK 使用率」信号）。全部只读汇总，不参与评级。 */
 export function calibSummary() {
+  const real = calibSamples.filter(s => !s.auto);
   let f = 0, h = 0, hs = 0;
-  for (const s of calibSamples) { f += s.shotsFired; h += s.shotsHit; hs += s.headshots; }
-  const victoryElapsed = calibSamples
+  for (const s of real) { f += s.shotsFired; h += s.shotsHit; hs += s.headshots; }
+  const victoryElapsed = real
     .filter(s => s.result === 'victory' && Number.isFinite(s.elapsedSec))
     .map(s => s.elapsedSec)
     .sort((a, b) => a - b);
+  // per-level 分桶（仅统计带 level 字段且有用时的样本；按关卡 P75 收紧 parTime 用）
+  const buckets = {};
+  for (const s of real) {
+    if (s.level === undefined || !Number.isFinite(s.elapsedSec)) continue;
+    const b = buckets[s.level] || (buckets[s.level] = { victory: [], deaths: 0 });
+    if (s.result === 'victory') b.victory.push(s.elapsedSec);
+    else b.deaths++;
+  }
+  const perLevel = {};
+  for (const key of Object.keys(buckets)) {
+    const v = buckets[key].victory.sort((a, b) => a - b);
+    perLevel[key] = {
+      victories: v.length,
+      deaths: buckets[key].deaths,
+      p50Sec: v.length ? v[Math.floor(v.length * 0.5)] : null,
+      p75Sec: v.length ? v[Math.floor(v.length * 0.75)] : null,
+    };
+  }
+  // 武器使用率：按局 weaponShots 快照逐武器累加（开火次数口径）
+  const weaponUsage = {};
+  for (const s of real) {
+    if (!s.weaponShots) continue;
+    for (const w of Object.keys(s.weaponShots)) weaponUsage[w] = (weaponUsage[w] || 0) + s.weaponShots[w];
+  }
   return {
-    n: calibSamples.length,                 // 样本局数；§10 要求 ≥10
-    pooledAccuracy: f > 0 ? h / f : 0,       // Σ命中 / Σ开枪
+    n: calibSamples.length,                 // 全部样本局数（含 auto）
+    nReal: real.length,                     // 真实对局数（标定口径）
+    nAuto: calibSamples.length - real.length,
+    pooledAccuracy: f > 0 ? h / f : 0,       // Σ命中 / Σ开枪（real 局）
     pooledHeadshotRate: h > 0 ? hs / h : 0,  // Σ爆头 / Σ命中
     totalShotsFired: f, totalShotsHit: h, totalHeadshots: hs,
-    victoryRuns: victoryElapsed.length,      // 有用时数据的胜利局数
-    // 胜利局用时中位数（偶数取中位右值，粗粒度够 P75 档位参考）
+    victoryRuns: victoryElapsed.length,      // 有用时数据的胜利局数（real）
+    // 胜利局用时中位数（全局；偶数取中位右值，粗粒度够 P75 档位参考）
     medianVictorySec: victoryElapsed.length ? victoryElapsed[victoryElapsed.length >> 1] : null,
+    perLevel,                                 // 关卡 id → {victories, deaths, p50Sec, p75Sec}
+    weaponUsage,                              // 武器 id → 开火次数
   };
 }
 
