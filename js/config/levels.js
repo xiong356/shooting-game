@@ -29,8 +29,11 @@ export const CRAB_CONFIG = { avoidRadius: 1.0, avoidStrength: 8.0 };
 //   L5  精英红+红×3+蓝×3（M3 真身）=1050  ×1.1×1.5 = 1733（§4 同值；300+450+300）
 //   L6  精英红+精英蓝+红×3+蓝×3+蟹×3 = 1474 ×1.2×1.5 = 2653（§4 同值；300+220+450+300+204）
 //   L7  主宰 6000 独立推导（§5.3 脚注†，不吃 k；召唤蟹走 MONSTER_SPECS 蟹基座 × k）
-// parTime = §4 纯输出时长 ×8（§6 公式：38=4.8×8 … 114=14.2×8），S 档时间门 = parTime×1.2。
-// L7 特例：parTime 固定 180（§6 Boss 关不适用 ×8 公式）。
+// parTime（§6 公式，M6 实测收紧）：初值 = 纯输出时长 ×8；140 局 playtest 数据显示玩家
+// 实际用时为纯输出的 ×1.7~3.7（tools/calib-report.js per-level P75），×8 系数偏松——
+// n≥3 的关卡已按 P75/0.75 收紧（L1 13 / L2 23 / L3 33 / L5 28 / L6 39）；
+// L4 P75 被霰弹慢速局拉偏（57s）暂保持 65；L7 Boss 关样本不足保持 180（难度两刀后重测）。
+// S 档时间门 = parTime×1.2。
 // parTimeMul（§6 武器差异容忍）：M5b+ 已回收——tolerance 是穿云（持续 DPS 仅 AK 的 0.59）
 // 时代的补偿；换装内格夫（持续 212 ≈ AK）后失去依据，L6/L7 S 门收紧回 parTime×1.2。
 // 机制保留（gradeFor/validateLevels 仍支持该字段），当前无关卡使用。
@@ -39,25 +42,25 @@ export const CRAB_CONFIG = { avoidRadius: 1.0, avoidStrength: 8.0 };
 export const LEVELS = [
   { id: 1, name: '峡谷初见', hpMul: 1.0, dmgMul: 1.0, spdMul: 1.0,
     spawns: [{ type: 'red', count: 4 }], layout: 'default',
-    parTime: 38, maxAlive: 8, reward: { unlock: 2 } },
+    parTime: 13, maxAlive: 8, reward: { unlock: 2 } },
   { id: 2, name: '蔚蓝威胁', hpMul: 1.0, dmgMul: 1.0, spdMul: 1.0,
     spawns: [{ type: 'red', count: 3 }, { type: 'blue', count: 3 }], layout: 'default',
-    parTime: 48, maxAlive: 8, reward: { unlock: 3 } },
+    parTime: 23, maxAlive: 8, reward: { unlock: 3 } },
   { id: 3, name: '野区窄道', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
     spawns: [{ type: 'red', count: 4 }, { type: 'blue', count: 3 }], layout: 'variantA',
-    parTime: 63, maxAlive: 8, reward: { unlock: 4, weapon: 'shotgun' } },
+    parTime: 33, maxAlive: 8, reward: { unlock: 4, weapon: 'shotgun' } },
   { id: 4, name: '蟹群来袭', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
     // M5b：总数 9 > maxAlive 8 → 最后 1 只蓝怪开局进 FIFO 队列，首只怪死亡动画播完补位（§4.1）
     spawns: [{ type: 'crab', count: 4 }, { type: 'red', count: 3 }, { type: 'blue', count: 2 }], layout: 'variantA',
     parTime: 65, maxAlive: 8, reward: { unlock: 5 } },
   { id: 5, name: '暗影先锋', hpMul: 1.1, dmgMul: 1.1, spdMul: 1.0,
     spawns: [{ type: 'eliteRed', count: 1 }, { type: 'red', count: 3 }, { type: 'blue', count: 3 }], layout: 'variantB',
-    parTime: 74, maxAlive: 8, reward: { unlock: 6, weapon: 'negev' } },
+    parTime: 28, maxAlive: 8, reward: { unlock: 6, weapon: 'negev' } },
   // ---- M5a：L6 毕业考 + L7 Boss 关（§4 总表）----
   { id: 6, name: '风暴前夕', hpMul: 1.2, dmgMul: 1.2, spdMul: 1.05,
     spawns: [{ type: 'eliteRed', count: 1 }, { type: 'eliteBlue', count: 1 }, { type: 'red', count: 3 }, { type: 'blue', count: 3 }, { type: 'crab', count: 3 }],
     layout: 'variantB',
-    parTime: 114, maxAlive: 8, reward: { unlock: 7 } },
+    parTime: 39, maxAlive: 8, reward: { unlock: 7 } },
   // L7：Boss「主宰」三阶段（§5.3）。spawns 留空——Boss 不入 spawns（怪种 schema 注释），
   // startGame 消费 boss 字段单独生成；召唤等阶段 adds 由 Boss 状态机自管（§4.1），
   // 补位队列不适用 Boss 关。行为参数全部 [PLACEHOLDER]+推导，⚗️ M6 playtest 收口。
