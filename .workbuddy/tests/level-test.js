@@ -181,7 +181,7 @@ async function freshModule(relPath, tag, initialStorage) {
     ok(baseHP.red === 150 && baseHP.blue === 100, '怪种基座读取（红150/蓝100，§2）', baseHP);
     ok(baseHP.crab === 68 && baseHP.eliteRed === 300 && baseHP.eliteBlue === 220,
       'M3 新怪种基座（蟹68/精英红300/精英蓝220，§5.3）', baseHP);
-    ok(baseHP.boss === 6000, 'M5a Boss 基座（主宰 6000，§5.3 独立推导，不吃 k）', baseHP.boss);
+    ok(baseHP.boss === 5200, 'M5a Boss 基座（主宰 5200，§5.3 独立推导 6000 后 M6 两刀下调，不吃 k）', baseHP.boss);
 
     // §4 总表血池列 L1-L6（M3/M5a 真身版；L7 Boss 独立推导不入池断言）
     const EXPECTED = [900, 1125, 1485, 1521, 1733, 2653];

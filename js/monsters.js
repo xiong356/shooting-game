@@ -143,11 +143,13 @@ const MONSTER_SPECS = {
   // 精英蓝：法术坦克——HP×2.2（纯×2 太脆，不足以制造集火决策窗口，§5.3）、伤害×1.5
   eliteBlue: { maxHealth: 220, chaseSpeed: 4.5, stopDist: BLUE_CAST_RANGE, projDamage: 15, scale: 1.3 },
   // ---- M5a Boss「主宰」（§5.3）----
-  // 数值基座：6000 HP 独立推导（§5.3 脚注†，不吃 HP_CALIB_MUL——game.js spawnBoss 以 mul{hp:1} 生成）；
+  // 数值基座：5200 HP（§5.3 独立推导 6000 后 M6 两次下调：第一刀速度/召唤海、
+  // 第二刀 HP——第一刀后 L7 仍 0 胜 9 负（§10 A 级数值墙），5200 = -13% 血量
+  // 缩短承伤窗口；不吃 HP_CALIB_MUL——game.js spawnBoss 以 mul{hp:1} 生成）；
   // 追速 3.2 < 红怪 5.0（压迫型坦克，风筝可解，P2）；stopDist 3.4（近战 range 4.0 内收）；
-  // 拍击 35（红怪 25 放大 → 3 掌死）/ 法球 15（精英蓝同伤）；碰撞半径 1.4（大体型 hitbox
+  // 拍击 35（红怪 25 放大）/ 法球 15（精英蓝同伤）；碰撞半径 1.4（大体型 hitbox
   // 是 §5.3 命中率 65% 推导的来源）。行为参数（拍击节奏/法球/召唤/转场）在 L7 行 boss 字段。
-  boss: { maxHealth: 6000, chaseSpeed: 3.2, stopDist: 3.4, meleeDamage: 35, projDamage: 15, radius: 1.4 },
+  boss: { maxHealth: 5200, chaseSpeed: 3.0, stopDist: 3.4, meleeDamage: 35, projDamage: 15, radius: 1.4 },
 };
 
 /**

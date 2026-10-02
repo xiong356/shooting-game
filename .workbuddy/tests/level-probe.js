@@ -181,7 +181,7 @@ const ok = (cond, label, extra) => {
   const l7mon = await evalJS('JSON.stringify(window.__SNAPSHOT__().monsters.map(m => m.type))').then(s => JSON.parse(s));
   ok(l7mon.length === 1 && l7mon[0] === 'boss', 'L7 只刷 Boss（spawns 空，boss 字段承载）', l7mon);
   const boss0 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
-  ok(boss0 && boss0.maxHealth === 6000, 'Boss 6000 HP（不吃 k，§2 适用范围条款）', boss0);
+  ok(boss0 && boss0.maxHealth === 5200, 'Boss 5200 HP（不吃 k；6000 经 M6 两刀下调）', boss0);
   ok(boss0.state === 'entrance' && boss0.invuln === true, '入场演出期：entrance 态 + 不可受击（§5.3）', boss0);
 
   await sleep(1500);   // 入场光柱 1.5s
@@ -198,7 +198,7 @@ const ok = (cond, label, extra) => {
 
   // P1 → P2 转场：扣到 69%（4140/6000），玩家 20 血 + 转场回血 30 → 50（净场精确断言）
   await evalJS('window.__SNAPSHOT__.setPlayerHealth(20)');
-  await evalJS('window.__SNAPSHOT__.bossDamage(6000 - 4140)');
+  await evalJS('window.__SNAPSHOT__.bossDamage(5200 - 3640)');   // 扣到 69%（3640/5200）
   await sleep(300);
   const bossT2 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
   const hpT2 = await evalJS('window.__SNAPSHOT__().playerHealth');
@@ -219,7 +219,7 @@ const ok = (cond, label, extra) => {
 
   // P2 → P3 转场：扣到恰好 40% → phase 3
   await evalJS('window.__SNAPSHOT__.setPlayerHealth(100)');
-  await evalJS('window.__SNAPSHOT__.bossDamage(4140 - 2400)');
+  await evalJS('window.__SNAPSHOT__.bossDamage(3640 - 2080)');   // 扣到恰好 40%（2080/5200）
   await sleep(300);
   const bossT3 = await evalJS('JSON.stringify(window.__SNAPSHOT__.boss())').then(s => JSON.parse(s));
   ok(bossT3.phase === 3 && bossT3.invuln === true, '40% → P3 转场', bossT3);
@@ -237,7 +237,7 @@ const ok = (cond, label, extra) => {
 
   // 击杀 Boss → 召唤群在场不结算（清 adds 是设计的一部分）；清场 → victory + unlocked 7
   await evalJS('window.__SNAPSHOT__.setPlayerHealth(100)');
-  await evalJS('window.__SNAPSHOT__.bossDamage(6000)');
+  await evalJS('window.__SNAPSHOT__.bossDamage(5200)');   // 击杀
   await sleep(600);   // Boss 进入死亡（召唤群在场）
   const afterBossDeath = await evalJS('JSON.stringify({ s: window.__SNAPSHOT__().status, b: window.__SNAPSHOT__.boss() })').then(s => JSON.parse(s));
   ok(afterBossDeath.s === 'playing' && afterBossDeath.b === null, 'Boss 死 + 召唤群在场 → 不结算，boss() 为 null', afterBossDeath);
