@@ -20,11 +20,11 @@ CC0 1.0 全文：https://creativecommons.org/publicdomain/zero/1.0/
 
 ---
 
-## 真实采样（用户指定来源，许可未核实）
+## 真实采样（用户指定来源，已获授权）
 
 | 文件 | 原始素材 | 来源 | 许可 |
 |---|---|---|---|
-| `negev-shot.wav` | B 站视频 BV1mBMJ64EKM 的音轨（内格夫持续扫射）——用户 2026-09-29 明确指定「这个视频是内格夫的枪声」，按用户指示提取 | https://www.bilibili.com/video/BV1mBMJ64EKM/ | **未核实**（B 站视频音轨，原始拍摄者/上传者权利链未知；**公开分发前需确认授权或替换**） |
+| `negev-shot.wav` | B 站视频 BV1mBMJ64EKM 的音轨（内格夫持续扫射）——用户 2026-09-29 指定「这个视频是内格夫的枪声」，按用户指示提取 | https://www.bilibili.com/video/BV1mBMJ64EKM/ | **已获授权**（素材权利人授权由用户取得，2026-10-02 确认） |
 
 处理方式：yt-dlp 抽 bestaudio → ffmpeg 转 44.1kHz 单声道 WAV → 自相关求出射击周期
 81.4ms（12.3 发/s）→ 对齐最强瞬态（596.373s）起音，裁「单个射击周期」**58.9ms**
