@@ -15,6 +15,11 @@ echo ============================================
 where node >nul 2>&1
 if %errorlevel%==0 (
     node server.js
+    if %errorlevel% neq 0 (
+        echo.
+        echo Server exited with an error. See message above.
+        pause
+    )
     goto end
 )
 
