@@ -2208,9 +2208,10 @@ window.addEventListener('keydown', (e) => {
   if (e.key.toLowerCase() === 'r' && state.status === 'playing') {
     input.reloadPressed = true;
   }
-  // M4② 数字键 1/2/3 切枪（§5.4 桌面键位）
-  if (state.status === 'playing' && ['1', '2', '3'].includes(e.key)) {
-    switchWeapon(WEAPON_SLOTS[Number(e.key) - 1]);
+  // M4② 数字键 1/2/3 切枪（§5.4 桌面键位）；M6：菜单态同样可切（开始界面持枪预览 + 带入下一局）
+  if (['1', '2', '3'].includes(e.key)) {
+    if (state.status === 'playing') switchWeapon(WEAPON_SLOTS[Number(e.key) - 1]);
+    else if (state.status === 'menu') menuSwitchWeapon(WEAPON_SLOTS[Number(e.key) - 1]);
   }
 });
 window.addEventListener('keyup', (e) => {
@@ -4972,6 +4973,39 @@ function continueLevelId() {
 function updateStartButton() {
   const el = document.getElementById('start-btn-text');
   if (el) el.textContent = '继续游戏 · L' + continueLevelId();
+  renderStartWeaponSlots();   // M6：开始界面武器槽随存档/进度刷新（过关发枪后返回菜单也能看到新枪）
+}
+
+// ============================================
+// 开始界面武器切换（M6 用户点单：菜单可换持枪，选中武器带入下一局）
+// ============================================
+// 菜单态的 currentWeaponId 直接复用对局状态：startGame 对 owned 武器不重置
+// （只校验非 owned 回退 ak47），故菜单里选定即生效到「继续游戏/下一局」；
+// 菜单背景相机里的第一人称枪模实时跟随（setWeaponModelVisible）。
+
+/** 菜单切换持枪（owned 校验；未拥有/非法 id 静默忽略——按钮已置灰） */
+function menuSwitchWeapon(id) {
+  if (state.status !== 'menu') return;
+  if (!WEAPON_SLOTS.includes(id) || !ownedWeapons().includes(id)) return;
+  currentWeaponId = id;
+  AK = WEAPONS[id];
+  fpsWeapon = weaponModels[id];
+  setWeaponModelVisible(id);
+  renderStartWeaponSlots();
+}
+
+/** 开始界面武器槽渲染：名称/owned 置灰/当前高亮（结构对齐 HUD renderWeaponSlots） */
+function renderStartWeaponSlots() {
+  const owned = ownedWeapons();
+  WEAPON_SLOTS.forEach((id, i) => {
+    const el = document.getElementById('start-weapon-slot-' + (i + 1));
+    if (!el) return;
+    const nameEl = el.querySelector('.sws-name');
+    if (nameEl) nameEl.textContent = WEAPONS[id].name;
+    el.classList.toggle('owned', owned.includes(id));
+    el.classList.toggle('current', currentWeaponId === id);
+    el.disabled = !owned.includes(id);
+  });
 }
 
 function showLevelSelect() {
@@ -5314,6 +5348,12 @@ function init() {
 
   // Button handlers
   document.getElementById('start-btn').addEventListener('click', function () { startGame(continueLevelId()); });
+  // M6：开始界面武器槽点击切换（键盘 1/2/3 走 keydown 的 menu 分支）
+  WEAPON_SLOTS.forEach((id, i) => {
+    const el = document.getElementById('start-weapon-slot-' + (i + 1));
+    if (el) el.addEventListener('click', function () { menuSwitchWeapon(id); });
+  });
+  renderStartWeaponSlots();
   document.getElementById('restart-btn').addEventListener('click', restartGame);
   document.getElementById('next-btn').addEventListener('click', function () {
     endScreen.classList.add('hidden');
