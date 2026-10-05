@@ -3738,6 +3738,7 @@ function applyWeaponSwitch(id) {
   state.currentAmmo = state.weaponAmmo[id] ?? AK.magSize;
   state.reloadDuration = AK.reloadTime;
   state.ammoRefilled = false;
+  if (state.reloading) cancelReload();   // M6：换绑瞬间清掉窗口期内重启的「僵尸换弹」（见 update 自动换弹注释）
   fpsWeapon = weaponModels[id];
   setWeaponModelVisible(id);
   updateAmmoUI();
@@ -5115,8 +5116,10 @@ function update(dt) {
       reload();
     }
 
-    // 弹匣打空 → 自动换弹。被野怪追着打时还要腾出手按 R 是反人类设计
-    if (state.currentAmmo <= 0 && !state.reloading) {
+    // 弹匣打空 → 自动换弹。被野怪追着打时还要腾出手按 R 是反人类设计。
+    // weaponSwitchT > 0（切枪动画进行中）时不触发——此刻 currentWeaponId 还是旧枪，
+    // 给它重启换弹会随换绑变成「僵尸换弹」卡死新枪（M6 用户报障：换弹中切枪卡射击）
+    if (state.currentAmmo <= 0 && !state.reloading && weaponSwitchT <= 0) {
       reload();
     }
 
@@ -5451,6 +5454,9 @@ window.__SNAPSHOT__ = () => ({
   isGrounded,
   status: state.status,
   currentAmmo: state.currentAmmo,
+  canShoot,                              // M6 调试：射击闸门诊断（换弹×切枪 bug 定位）
+  shootTimer,                            // M6 调试：同上
+  reloadDuration: state.reloadDuration,
   playerHealth: state.playerHealth,   // M5a：Boss 转场回血探针断言用
   // M0 标定用统计（口径与结算屏 endGame 一致）
   accuracy: state.shotsFired > 0 ? state.shotsHit / state.shotsFired : 0,   // 命中率 = 命中 / 开枪
@@ -5533,6 +5539,12 @@ window.__SNAPSHOT__.teleportBoss = function (x, z) {
   if (!bossMonster) return false;
   bossMonster.position.set(x, 0, z);
   return true;
+};
+// 排空当前弹匣至 1 发（M6 换弹链路复现用；正常游玩不可达）
+window.__SNAPSHOT__.drainMag = function () {
+  state.currentAmmo = 1;
+  updateAmmoUI();
+  return state.currentAmmo;
 };
 // 定量打伤第 idx 只存活怪（M5b 补位节奏验证用；正常游玩不可达）
 window.__SNAPSHOT__.hurtMonster = function (idx, n) {
