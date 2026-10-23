@@ -1,16 +1,43 @@
-# 王者峡谷 PvE — 野怪追逐
+<p align="center">
+  <img src="docs/banner.png" alt="王者峡谷 PvE — 野怪追逐" width="100%">
+</p>
 
-一个跑在浏览器里的第一人称 PvE 射击游戏。王者峡谷主题：闯过 7 个线性解锁的关卡，猎杀猩红 / 蔚蓝双阵营石像与迅捷蟹，最终迎战三阶段 Boss「主宰」，拿 S 评级、攒通关进度——压力来自「下一秒该先杀谁」的决策，而不是数值墙。
+<h1 align="center">🎯 王者峡谷 PvE — 野怪追逐</h1>
 
-**Three.js 渲染 · 零构建依赖 · 纯 HTML/CSS/JS**
+<p align="center">
+  <b>跑在浏览器里的第一人称 PvE 射击</b><br>
+  7 关线性闯关 · 猩红 / 蔚蓝双阵营石像 · 迅捷蟹 · 三阶段 Boss「主宰」<br>
+  压力来自「下一秒该先杀谁」的决策，而不是数值墙。
+</p>
+
+<p align="center">
+  <a href="https://github.com/xiong356/shooting-game/stargazers"><img src="https://img.shields.io/github/stars/xiong356/shooting-game?style=flat&logo=github&label=Stars&color=yellow" alt="Stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat" alt="License"></a>
+  <a href="https://github.com/xiong356/shooting-game/releases"><img src="https://img.shields.io/github/v/release/xiong356/shooting-game?style=flat&label=release&color=blue" alt="Release"></a>
+  <img src="https://img.shields.io/badge/Three.js-0.160-049ef4?style=flat&logo=threedotjs&logoColor=white" alt="Three.js">
+  <img src="https://img.shields.io/badge/JavaScript-ES2022-f7df1e?style=flat&logo=javascript&logoColor=black" alt="JavaScript">
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D18-339933?style=flat&logo=nodedotjs&logoColor=white" alt="Node.js">
+  <img src="https://img.shields.io/badge/build-zero%20build-lightgrey?style=flat" alt="Zero build">
+  <a href="https://github.com/xiong356/shooting-game/commits"><img src="https://img.shields.io/github/last-commit/xiong356/shooting-game?style=flat" alt="Last commit"></a>
+</p>
+
+<p align="center">
+  <a href="#-快速开始">快速开始</a> ·
+  <a href="#-操作说明">操作</a> ·
+  <a href="#-玩法与数值">玩法数值</a> ·
+  <a href="#-技术实现要点">技术实现</a> ·
+  <a href="#-项目结构">项目结构</a> ·
+  <a href="#-开发文档">开发文档</a> ·
+  <a href="#-许可">许可</a>
+</p>
 
 ![游戏截图](docs/screenshot.png)
 
 ---
 
-## 快速开始
+## 🚀 快速开始
 
-需要本机已安装 [Node.js](https://nodejs.org/)（仅用于起一个静态服务器，项目本身没有任何 npm 依赖）。
+需要本机已安装 [Node.js](https://nodejs.org/) ≥ 18（仅用于起一个静态服务器，项目本身没有任何 npm 依赖）。
 
 ```bash
 # 方式一：双击启动（Windows，会自动打开浏览器）
@@ -30,7 +57,7 @@ node server.js
 
 ---
 
-## 操作说明
+## 🎮 操作说明
 
 | 操作 | 按键 |
 |---|---|
@@ -39,19 +66,31 @@ node server.js
 | 瞄准视角 | 鼠标（指针锁定） |
 | 射击 | 鼠标左键（可按住连发） |
 | 换弹 | `R` |
+| 切枪 | `1` / `2` / `3` |
 | 暂停 / 继续 | `Esc` 解除锁定，点击画面恢复 |
 
-移动端会自动启用触摸控件：左下角虚拟摇杆移动，右侧按钮射击 / 换弹，滑动屏幕转视角。
+移动端会自动启用触摸控件：左下角虚拟摇杆移动，右侧按钮射击 / 换弹 / 切枪，滑动屏幕转视角。
 
 ---
 
-## 玩法与数值
+## ⚔️ 玩法与数值
 
 ### 关卡与进度
 
 - **7 关线性解锁**：峡谷初见 → 蔚蓝威胁 → 野区窄道 → 蟹群来袭 → 暗影先锋 → 风暴前夕（全怪种毕业考）→ 主宰降临（三阶段 Boss）。
   通关解锁下一关，结算写入 localStorage 存档（最佳评级 / 最佳分数 / 通关次数）；
   坏档自动备份重置，多标签页合并进度，隐私模式降级为内存档继续玩。
+
+| 关 | 名称 | 阵容 | 场地 | parTime |
+|---|---|---|---|---|
+| L1 | 峡谷初见 | 红×4 | 默认布局 | 13s |
+| L2 | 蔚蓝威胁 | 红×3 + 蓝×3 | 默认布局 | 23s |
+| L3 | 野区窄道 | 红×4 + 蓝×3 | 野区窄道 | 33s |
+| L4 | 蟹群来袭 | 蟹×4 + 红×3 + 蓝×2 | 野区窄道 | 65s |
+| L5 | 暗影先锋 | 精英红 + 红×3 + 蓝×3 | 开阔祭坛 | 28s |
+| L6 | 风暴前夕 | 全怪种毕业考 ×11 | 开阔祭坛 | 39s |
+| L7 | 主宰降临 | Boss 三阶段（6000 HP） | 默认布局 | 180s |
+
 - **三套场地**：默认布局（双隔断 + 掩体柱，L1/L2/L7）、野区窄道（中路 S 形双窄口，L3/L4）、
   开阔祭坛（2×3 双柱阵，L5/L6）。每次进关清场重建。
 - **同场上限 8 + 补位队列**：L4/L6 开局超编的怪在 FIFO 队列排队，每只怪的死亡动画播完才补位进场
@@ -93,7 +132,7 @@ node server.js
 
 ---
 
-## 技术实现要点
+## 🛠 技术实现要点
 
 几个值得一提的地方：
 
@@ -121,7 +160,7 @@ node server.js
 
 ---
 
-## 项目结构
+## 📁 项目结构
 
 ```
 shoot/
@@ -140,14 +179,17 @@ shoot/
 ├── assets/
 │   ├── ak47.glb        AK-47 枪模
 │   └── sfx/            音效文件 + CREDITS.md（来源与许可）
-└── docs/
-    ├── level-system-design.md  关卡系统设计文档（全部数值挂推导或验收路径）
-    └── screenshot.png  README 配图
+├── docs/
+│   ├── banner.png                README 顶部横幅（tools/make-banner.py 生成）
+│   ├── level-system-design.md    关卡系统设计文档（全部数值挂推导或验收路径）
+│   └── screenshot.png            README 配图
+├── tools/              标定报告 / 横幅生成等离线工具
+└── LICENSE             MIT
 ```
 
 ---
 
-## 开发文档
+## 📚 开发文档
 
 这个项目在开发过程中沉淀了比较完整的记录，都在仓库里：
 
@@ -160,7 +202,7 @@ shoot/
   碰撞与分离 36 项、绕行与蟹转向钝验收 43 项、伤害判定 28 项、关卡/存档/评级 69 项、
   Boss 门禁 39 项（阶段阈值/schema/parTimeMul/召唤节流）、补位队列切分 16 项；
   另有 CDP 无头 Chrome 端到端探针（`level-probe.js`，49 项：闯关/存档/切关无残留/L6 补位队列/L7 Boss 三阶段链路/移动端布局）。
-  改完代码跑一遍，全绿才算过（见 CONTRIBUTING.md）。
+  改完代码跑一遍，全绿才算过（见 [CONTRIBUTING.md](CONTRIBUTING.md)）。
 - **[`.learnings/`](.learnings/)** — 复盘条目，记录了一些可复用的工程结论，例如：
   - `node --check` 对 `.js` 文件**不可靠**：同一份含多余右括号的文件，
     `--check x.mjs` 退出码 1（能抓到），`--check x.js` 退出码 0（**漏检**，因为按 CommonJS 解析）。
@@ -171,7 +213,7 @@ shoot/
 
 ---
 
-## 已知限制
+## ⚠️ 已知限制
 
 - **枪模是低模**。当前用的是 `assets/ak47.glb`（47KB，29 个网格），视觉上偏方块。
   原本的高模 `ak47_2.glb` 是下载中断的残档（GLB 头声明 5068520 字节、实际只有 2056192 字节，
@@ -181,7 +223,7 @@ shoot/
 
 ---
 
-## 音效素材与许可
+## 🔊 音效素材与许可
 
 | 文件 | 来源 | 许可 |
 |---|---|---|
@@ -194,6 +236,19 @@ shoot/
 
 ---
 
-## 技术栈
+## 📄 许可
 
-Three.js 0.160 · Pointer Lock API · Web Audio API · GLTFLoader · 原生 ES Module
+本项目代码采用 [MIT License](LICENSE) 开源。
+
+第三方素材保留各自原有许可（见上表与 [`assets/sfx/CREDITS.md`](assets/sfx/CREDITS.md)）；
+`ak47-shot.wav` 为本项目程序化合成，无第三方权利。
+
+---
+
+<div align="center">
+
+**Three.js 0.160 · Pointer Lock API · Web Audio API · GLTFLoader · 原生 ES Module**
+
+如果这个游戏对你有用，给个 ⭐ Star 支持一下
+
+</div>
