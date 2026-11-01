@@ -248,6 +248,13 @@ AK 与霰弹枪声没有采用现成录音：候选素材要么许可自相矛�
 第三方素材保留各自原有许可（见上表与 [`assets/sfx/CREDITS.md`](assets/sfx/CREDITS.md)）；
 `ak47-shot.wav` 为本项目程序化合成，无第三方权利。
 
+本仓库已收录于 [XERJ Corpus Hub](https://hub.xerj.org/contributors/xiong356)，
+供 AI 编程助手检索参考（MIT 授权，保留署名）：
+
+<p align="center">
+  <a href="https://hub.xerj.org/contributors/xiong356"><img src="https://hub.xerj.org/contributors/xiong356/badge.svg" alt="XERJ Corpus Hub contributor"></a>
+</p>
+
 ---
 
 <div align="center">
