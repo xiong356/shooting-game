@@ -14,6 +14,7 @@
   <a href="https://github.com/xiong356/shooting-game/stargazers"><img src="https://img.shields.io/github/stars/xiong356/shooting-game?style=flat&logo=github&label=Stars&color=yellow" alt="Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat" alt="License"></a>
   <a href="https://github.com/xiong356/shooting-game/releases"><img src="https://img.shields.io/github/v/release/xiong356/shooting-game?style=flat&label=release&color=blue" alt="Release"></a>
+  <a href="https://hub.xerj.org/contributors/xiong356"><img src="https://hub.xerj.org/contributors/xiong356/badge.svg" alt="XERJ Corpus Hub contributor"></a>
   <img src="https://img.shields.io/badge/Three.js-0.160-049ef4?style=flat&logo=threedotjs&logoColor=white" alt="Three.js">
   <img src="https://img.shields.io/badge/JavaScript-ES2022-f7df1e?style=flat&logo=javascript&logoColor=black" alt="JavaScript">
   <img src="https://img.shields.io/badge/Node.js-%3E%3D18-339933?style=flat&logo=nodedotjs&logoColor=white" alt="Node.js">
